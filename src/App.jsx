@@ -741,7 +741,9 @@ function App() {
   const addMedicine = useCallback(
     async (payload) => {
       if (!isAdmin) {
-        return { ok: false, message: 'Only admins can add medicines.' }
+        const message = 'Only admins can add medicines.'
+        pushNotice('error', message)
+        return { ok: false, message }
       }
 
       const sku = String(payload.sku || '').trim()
@@ -752,13 +754,19 @@ function App() {
       const expiry = payload.expiry || null
 
       if (!sku || !name || !category || !expiry) {
-        return { ok: false, message: 'All fields are required.' }
+        const message = 'All fields are required.'
+        pushNotice('error', message)
+        return { ok: false, message }
       }
       if (Number.isNaN(price) || price < 0.1) {
-        return { ok: false, message: 'Price must be at least 0.1.' }
+        const message = 'Price must be at least 0.1.'
+        pushNotice('error', message)
+        return { ok: false, message }
       }
       if (Number.isNaN(stock) || stock < 0) {
-        return { ok: false, message: 'Stock must be 0 or greater.' }
+        const message = 'Stock must be 0 or greater.'
+        pushNotice('error', message)
+        return { ok: false, message }
       }
 
       const { error } = await supabase.from('medicines').insert([
@@ -773,6 +781,7 @@ function App() {
       ])
 
       if (error) {
+        pushNotice('error', error.message)
         return { ok: false, message: error.message }
       }
 
@@ -783,25 +792,80 @@ function App() {
     [isAdmin, loadMedicines, pushNotice],
   )
 
-  const editMedicineStock = useCallback(
-    async (id, stock) => {
+  const updateMedicine = useCallback(
+    async (payload) => {
       if (!isAdmin) {
-        return { ok: false, message: 'Only admins can edit stock.' }
+        const message = 'Only admins can edit medicines.'
+        pushNotice('error', message)
+        return { ok: false, message }
       }
 
-      const parsedStock = Number(stock)
-      if (Number.isNaN(parsedStock) || parsedStock < 0) {
-        return { ok: false, message: 'Stock must be 0 or greater.' }
+      const id = payload.id
+      const name = String(payload.name || '').trim()
+      const category = String(payload.category || '').trim()
+      const price = Number(payload.price)
+      const stock = Number(payload.stock)
+      const expiry = payload.expiry || null
+
+      if (!id || !name || !category) {
+        const message = 'Name and category are required.'
+        pushNotice('error', message)
+        return { ok: false, message }
+      }
+      if (Number.isNaN(price) || price < 0.1) {
+        const message = 'Price must be at least 0.1.'
+        pushNotice('error', message)
+        return { ok: false, message }
+      }
+      if (Number.isNaN(stock) || stock < 0) {
+        const message = 'Stock must be 0 or greater.'
+        pushNotice('error', message)
+        return { ok: false, message }
       }
 
-      const { error } = await supabase.from('medicines').update({ stock: parsedStock }).eq('id', id)
+      const { error } = await supabase
+        .from('medicines')
+        .update({ name, category, price, stock, expiry })
+        .eq('id', id)
 
       if (error) {
+        pushNotice('error', error.message)
         return { ok: false, message: error.message }
       }
 
       await loadMedicines()
-      pushNotice('success', 'Stock updated.')
+      pushNotice('success', `${name} updated.`)
+      return { ok: true }
+    },
+    [isAdmin, loadMedicines, pushNotice],
+  )
+
+  const deleteMedicine = useCallback(
+    async (payload) => {
+      if (!isAdmin) {
+        const message = 'Only admins can delete medicines.'
+        pushNotice('error', message)
+        return { ok: false, message }
+      }
+
+      const id = payload?.id
+      const name = String(payload?.name || 'Medicine')
+      if (!id) {
+        const message = 'Medicine id is required.'
+        pushNotice('error', message)
+        return { ok: false, message }
+      }
+
+      const { error } = await supabase.from('medicines').delete().eq('id', id)
+
+      if (error) {
+        pushNotice('error', error.message)
+        return { ok: false, message: error.message }
+      }
+
+      setCart((prev) => prev.filter((item) => item.medicineId !== id))
+      await loadMedicines()
+      pushNotice('success', `${name} deleted.`)
       return { ok: true }
     },
     [isAdmin, loadMedicines, pushNotice],
@@ -809,12 +873,9 @@ function App() {
 
   const clearInventory = useCallback(async () => {
     if (!isAdmin) {
-      return
-    }
-
-    const confirmed = window.confirm('Delete all medicines from inventory?')
-    if (!confirmed) {
-      return
+      const message = 'Only admins can delete all medicines.'
+      pushNotice('error', message)
+      return { ok: false, message }
     }
 
     const { error } = await supabase
@@ -824,12 +885,13 @@ function App() {
 
     if (error) {
       pushNotice('error', error.message)
-      return
+      return { ok: false, message: error.message }
     }
 
     setCart([])
     await loadMedicines()
     pushNotice('success', 'All medicines deleted from inventory.')
+    return { ok: true }
   }, [isAdmin, loadMedicines, pushNotice])
 
   const saveSettings = useCallback(
@@ -1095,7 +1157,8 @@ function App() {
               globalSearch={headerSearch}
               isAdmin={isAdmin}
               onAddMedicine={addMedicine}
-              onEditStock={editMedicineStock}
+              onUpdateMedicine={updateMedicine}
+              onDeleteMedicine={deleteMedicine}
               onClearInventory={clearInventory}
               currency={settings.currency}
             />
@@ -1608,14 +1671,15 @@ function InventoryPage({
   globalSearch,
   isAdmin,
   onAddMedicine,
-  onEditStock,
+  onUpdateMedicine,
+  onDeleteMedicine,
   onClearInventory,
   currency,
 }) {
   const [category, setCategory] = useState('All')
   const [showAddModal, setShowAddModal] = useState(false)
-  const [showStockModal, setShowStockModal] = useState(false)
-  const [selectedMedicine, setSelectedMedicine] = useState(null)
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false)
 
   const [addForm, setAddForm] = useState({
     sku: '',
@@ -1625,10 +1689,20 @@ function InventoryPage({
     stock: '',
     expiry: '',
   })
+  const [editForm, setEditForm] = useState({
+    id: '',
+    sku: '',
+    name: '',
+    category: '',
+    price: '',
+    stock: '',
+    expiry: '',
+  })
   const [addError, setAddError] = useState('')
-
-  const [stockValue, setStockValue] = useState('')
-  const [stockError, setStockError] = useState('')
+  const [editError, setEditError] = useState('')
+  const [deleteAllError, setDeleteAllError] = useState('')
+  const [deleteAllConfirmText, setDeleteAllConfirmText] = useState('')
+  const [deletingAll, setDeletingAll] = useState(false)
 
   const filtered = useMemo(() => {
     const query = globalSearch.trim().toLowerCase()
@@ -1664,23 +1738,75 @@ function InventoryPage({
     setShowAddModal(false)
   }
 
-  const submitStockUpdate = async (event) => {
+  const openEditModal = (medicine) => {
+    setEditForm({
+      id: medicine.id,
+      sku: medicine.sku,
+      name: medicine.name,
+      category: medicine.category,
+      price: String(medicine.price),
+      stock: String(medicine.stock),
+      expiry: medicine.expiry || '',
+    })
+    setEditError('')
+    setShowEditModal(true)
+  }
+
+  const submitEditMedicine = async (event) => {
     event.preventDefault()
-    setStockError('')
+    setEditError('')
 
-    if (!selectedMedicine) {
-      return
-    }
-
-    const result = await onEditStock(selectedMedicine.id, stockValue)
+    const result = await onUpdateMedicine(editForm)
     if (!result.ok) {
-      setStockError(result.message)
+      setEditError(result.message)
       return
     }
 
-    setShowStockModal(false)
-    setSelectedMedicine(null)
-    setStockValue('')
+    setShowEditModal(false)
+  }
+
+  const handleDeleteMedicine = async (medicine) => {
+    const confirmed = window.confirm('Delete this medicine?')
+    if (!confirmed) {
+      return
+    }
+
+    await onDeleteMedicine({
+      id: medicine.id,
+      name: medicine.name,
+    })
+  }
+
+  const handleDeleteAllStart = () => {
+    const confirmed = window.confirm('This will permanently delete all medicines.')
+    if (!confirmed) {
+      return
+    }
+    setDeleteAllConfirmText('')
+    setDeleteAllError('')
+    setShowDeleteAllModal(true)
+  }
+
+  const submitDeleteAll = async (event) => {
+    event.preventDefault()
+    setDeleteAllError('')
+
+    if (deleteAllConfirmText !== 'DELETE') {
+      setDeleteAllError('Type DELETE to confirm.')
+      return
+    }
+
+    setDeletingAll(true)
+    const result = await onClearInventory()
+    setDeletingAll(false)
+
+    if (!result?.ok) {
+      setDeleteAllError(result?.message || 'Failed to delete all medicines.')
+      return
+    }
+
+    setShowDeleteAllModal(false)
+    setDeleteAllConfirmText('')
   }
 
   return (
@@ -1704,8 +1830,14 @@ function InventoryPage({
 
             {isAdmin ? (
               <>
-                <Button size="sm" variant="secondary" onClick={() => void onClearInventory()} icon={Trash2}>
-                  Clear All
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleDeleteAllStart}
+                  icon={Trash2}
+                  className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+                >
+                  Delete All
                 </Button>
                 <Button size="sm" onClick={() => setShowAddModal(true)} icon={Plus}>
                   Add Medicine
@@ -1724,7 +1856,7 @@ function InventoryPage({
             { label: 'Stock', className: 'text-right' },
             { label: 'Expiry' },
             { label: 'Status' },
-            ...(isAdmin ? [{ label: 'Action', className: 'text-right' }] : []),
+            ...(isAdmin ? [{ label: 'Actions', className: 'text-right' }] : []),
           ]}
         >
           {filtered.map((medicine) => (
@@ -1742,19 +1874,20 @@ function InventoryPage({
               </td>
               {isAdmin ? (
                 <td className="px-3 py-2 text-xs text-right">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    icon={Edit3}
-                    onClick={() => {
-                      setSelectedMedicine(medicine)
-                      setStockValue(String(medicine.stock))
-                      setStockError('')
-                      setShowStockModal(true)
-                    }}
-                  >
-                    Edit Stock
-                  </Button>
+                  <div className="inline-flex items-center gap-2">
+                    <Button variant="secondary" size="sm" icon={Edit3} onClick={() => openEditModal(medicine)}>
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={Trash2}
+                      onClick={() => void handleDeleteMedicine(medicine)}
+                      className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </td>
               ) : null}
             </tr>
@@ -1820,27 +1953,85 @@ function InventoryPage({
       </Modal>
 
       <Modal
-        open={showStockModal}
-        onClose={() => setShowStockModal(false)}
-        title="Edit Stock"
-        description={selectedMedicine ? `${selectedMedicine.name} (${selectedMedicine.sku})` : ''}
+        open={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        title="Edit Medicine"
+        description={editForm.sku ? `SKU: ${editForm.sku}` : ''}
       >
-        <form className="space-y-3" onSubmit={(event) => void submitStockUpdate(event)}>
-          <Input
-            label="Stock Quantity"
-            type="number"
-            min="0"
-            value={stockValue}
-            onChange={(event) => setStockValue(event.target.value)}
-          />
+        <form className="space-y-3" onSubmit={(event) => void submitEditMedicine(event)}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Name"
+              value={editForm.name}
+              onChange={(event) => setEditForm((prev) => ({ ...prev, name: event.target.value }))}
+            />
+            <Input
+              label="Category"
+              value={editForm.category}
+              onChange={(event) => setEditForm((prev) => ({ ...prev, category: event.target.value }))}
+            />
+            <Input
+              label="Price"
+              type="number"
+              min="0.1"
+              step="0.01"
+              value={editForm.price}
+              onChange={(event) => setEditForm((prev) => ({ ...prev, price: event.target.value }))}
+            />
+            <Input
+              label="Stock"
+              type="number"
+              min="0"
+              value={editForm.stock}
+              onChange={(event) => setEditForm((prev) => ({ ...prev, stock: event.target.value }))}
+            />
+            <Input
+              label="Expiry"
+              type="date"
+              value={editForm.expiry}
+              onChange={(event) => setEditForm((prev) => ({ ...prev, expiry: event.target.value }))}
+            />
+          </div>
 
-          {stockError ? <p className="text-xs text-rose-600">{stockError}</p> : null}
+          {editError ? <p className="text-xs text-rose-600">{editError}</p> : null}
 
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setShowStockModal(false)}>
+            <Button type="button" variant="secondary" onClick={() => setShowEditModal(false)}>
               Cancel
             </Button>
-            <Button type="submit">Update Stock</Button>
+            <Button type="submit">Save Changes</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={showDeleteAllModal}
+        onClose={() => setShowDeleteAllModal(false)}
+        title="Delete All Medicines"
+        description="Type DELETE to permanently remove all medicines."
+      >
+        <form className="space-y-3" onSubmit={(event) => void submitDeleteAll(event)}>
+          <Input
+            label='Confirmation Text'
+            value={deleteAllConfirmText}
+            onChange={(event) => setDeleteAllConfirmText(event.target.value)}
+            placeholder='Type DELETE'
+          />
+
+          {deleteAllError ? <p className="text-xs text-rose-600">{deleteAllError}</p> : null}
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setShowDeleteAllModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              icon={Trash2}
+              disabled={deleteAllConfirmText !== 'DELETE' || deletingAll}
+              className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+            >
+              {deletingAll ? 'Deleting...' : 'Confirm Delete All'}
+            </Button>
           </div>
         </form>
       </Modal>
