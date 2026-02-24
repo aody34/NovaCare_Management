@@ -434,6 +434,12 @@ function App() {
           return
         }
         setProfile(nextProfile)
+      } catch (error) {
+        if (mounted) {
+          setSession(null)
+          setProfile(null)
+          pushNotice('error', error?.message || 'Authentication failed.')
+        }
       } finally {
         if (mounted) {
           if (authTimeoutId) {
@@ -459,20 +465,27 @@ function App() {
         setAuthLoading(false)
       }
 
-      setSession(nextSession)
+      try {
+        setSession(nextSession)
 
-      if (!nextSession?.user) {
-        clearSessionState()
-        return
-      }
+        if (!nextSession?.user) {
+          clearSessionState()
+          return
+        }
 
-      setProfileLoading(true)
-      const nextProfile = await loadProfile(nextSession.user)
-      if (!mounted) {
-        return
+        setProfileLoading(true)
+        const nextProfile = await loadProfile(nextSession.user)
+        if (!mounted) {
+          return
+        }
+        setProfile(nextProfile)
+        setProfileLoading(false)
+      } catch (error) {
+        if (mounted) {
+          setProfileLoading(false)
+          pushNotice('error', error?.message || 'Authentication state update failed.')
+        }
       }
-      setProfile(nextProfile)
-      setProfileLoading(false)
     })
 
     return () => {
@@ -599,14 +612,18 @@ function App() {
         return { ok: false, message: 'Email and password are required.' }
       }
 
-      const { error } = await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password,
-      })
-      if (error) {
-        return { ok: false, message: error.message }
+      try {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password,
+        })
+        if (error) {
+          return { ok: false, message: error.message }
+        }
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, message: error?.message || 'Sign in failed. Please try again.' }
       }
-      return { ok: true }
     },
     [],
   )

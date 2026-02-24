@@ -7,7 +7,15 @@ const supabaseKey = String(
 
 export const hasSupabaseEnv = Boolean(supabaseUrl && supabaseKey)
 
-export const supabase = hasSupabaseEnv ? createClient(supabaseUrl, supabaseKey) : null
+const nonBlockingLock = async (_name, _timeout, acquire) => acquire()
+
+export const supabase = hasSupabaseEnv
+  ? createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        lock: nonBlockingLock,
+      },
+    })
+  : null
 
 export function createNoSessionSupabaseClient() {
   if (!hasSupabaseEnv) {
@@ -16,6 +24,7 @@ export function createNoSessionSupabaseClient() {
 
   return createClient(supabaseUrl, supabaseKey, {
     auth: {
+      lock: nonBlockingLock,
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
