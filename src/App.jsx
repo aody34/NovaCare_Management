@@ -24,7 +24,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react'
-import { hasSupabaseEnv, supabase } from './lib/supabase'
+import { createNoSessionSupabaseClient, hasSupabaseEnv, supabase } from './lib/supabase'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -179,10 +179,28 @@ function statusTone(status) {
   return 'emerald'
 }
 
+function mapSettingsRow(row) {
+  if (!row) {
+    return DEFAULT_SETTINGS
+  }
+
+  return {
+    id: row.id,
+    store_name: row.store_name || DEFAULT_SETTINGS.store_name,
+    currency: row.currency || 'USD',
+    tax_rate: Number(row.tax_rate || 0),
+    prices_include_tax: Boolean(row.prices_include_tax),
+    address: row.address || '',
+    phone: row.phone || '',
+    support_email: row.support_email || '',
+  }
+}
+
 function App() {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [profileLoading, setProfileLoading] = useState(false)
   const [appLoading, setAppLoading] = useState(false)
 
   const [activePage, setActivePage] = useState('dashboard')
@@ -196,6 +214,7 @@ function App() {
 
   const [cart, setCart] = useState([])
   const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0])
+  const [saleSubmitting, setSaleSubmitting] = useState(false)
 
   const [financeRange, setFinanceRange] = useState(() => {
     const to = new Date()
@@ -221,19 +240,23 @@ function App() {
       return null
     }
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id,email,full_name,role,created_at')
-      .eq('id', user.id)
-      .maybeSingle()
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id,email,full_name,role,created_at')
+        .eq('id', user.id)
+        .maybeSingle()
 
-    if (error) {
-      pushNotice('error', error.message)
-      return null
-    }
+      if (error) {
+        pushNotice('error', error.message)
+        return null
+      }
 
-    if (data) {
-      return data
+      if (data) {
+        return data
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 200))
     }
 
     return {
@@ -263,16 +286,7 @@ function App() {
       return
     }
 
-    setSettings({
-      id: row.id,
-      store_name: row.store_name || DEFAULT_SETTINGS.store_name,
-      currency: row.currency || 'USD',
-      tax_rate: Number(row.tax_rate || 0),
-      prices_include_tax: Boolean(row.prices_include_tax),
-      address: row.address || '',
-      phone: row.phone || '',
-      support_email: row.support_email || '',
-    })
+    setSettings(mapSettingsRow(row))
   }, [pushNotice])
 
   const loadMedicines = useCallback(async () => {
@@ -373,55 +387,77 @@ function App() {
 
     let mounted = true
 
+    const clearSessionState = () => {
+      setProfileLoading(false)
+      setProfile(null)
+      setMedicines([])
+      setTransactions([])
+      setStaffProfiles([])
+      setSettings(DEFAULT_SETTINGS)
+      setCart([])
+      setSaleSubmitting(false)
+    }
+
     const bootstrap = async () => {
-      const {
-        data: { session: currentSession },
-        error,
-      } = await supabase.auth.getSession()
+      try {
+        const {
+          data: { session: currentSession },
+          error,
+        } = await supabase.auth.getSession()
 
-      if (!mounted) {
-        return
-      }
+        if (!mounted) {
+          return
+        }
 
-      if (error) {
-        pushNotice('error', error.message)
-      }
+        if (error) {
+          pushNotice('error', error.message)
+        }
 
-      setSession(currentSession)
-      if (currentSession?.user) {
+        setSession(currentSession)
+        setAuthLoading(false)
+
+        if (!currentSession?.user) {
+          clearSessionState()
+          return
+        }
+
+        setProfileLoading(true)
         const nextProfile = await loadProfile(currentSession.user)
+        if (!mounted) {
+          return
+        }
+        setProfile(nextProfile)
+      } finally {
         if (mounted) {
-          setProfile(nextProfile)
+          setAuthLoading(false)
+          setProfileLoading(false)
         }
       }
-      setAuthLoading(false)
     }
 
     void bootstrap()
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      if (!mounted) {
+    } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
+      if (!mounted || event === 'INITIAL_SESSION') {
         return
       }
 
       setSession(nextSession)
 
-      if (nextSession?.user) {
-        const nextProfile = await loadProfile(nextSession.user)
-        if (!mounted) {
-          return
-        }
-        setProfile(nextProfile)
-      } else {
-        setProfile(null)
-        setMedicines([])
-        setTransactions([])
-        setStaffProfiles([])
-        setSettings(DEFAULT_SETTINGS)
-        setCart([])
+      if (!nextSession?.user) {
+        clearSessionState()
+        return
       }
+
+      setProfileLoading(true)
+      const nextProfile = await loadProfile(nextSession.user)
+      if (!mounted) {
+        return
+      }
+      setProfile(nextProfile)
+      setProfileLoading(false)
     })
 
     return () => {
@@ -540,7 +576,15 @@ function App() {
 
   const handleLogin = useCallback(
     async ({ email, password }) => {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      const normalizedEmail = String(email || '').trim().toLowerCase()
+      if (!normalizedEmail || !password) {
+        return { ok: false, message: 'Email and password are required.' }
+      }
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      })
       if (error) {
         return { ok: false, message: error.message }
       }
@@ -616,6 +660,10 @@ function App() {
   }, [])
 
   const completeSale = useCallback(async () => {
+    if (saleSubmitting) {
+      return
+    }
+
     if (cart.length === 0) {
       pushNotice('error', 'Add medicines to complete a sale.')
       return
@@ -633,10 +681,19 @@ function App() {
       items: cart.map((row) => ({ medicine_id: row.medicineId, qty: row.qty })),
     }
 
-    const { error } = await supabase.rpc('complete_sale', { payload })
+    setSaleSubmitting(true)
+    let rpcError = null
+    try {
+      const result = await supabase.rpc('complete_sale', { payload })
+      rpcError = result.error
+    } catch (error) {
+      rpcError = error
+    } finally {
+      setSaleSubmitting(false)
+    }
 
-    if (error) {
-      pushNotice('error', error.message)
+    if (rpcError) {
+      pushNotice('error', rpcError.message || 'Failed to complete sale.')
       return
     }
 
@@ -644,7 +701,7 @@ function App() {
     setPaymentMethod(PAYMENT_METHODS[0])
     await Promise.all([loadMedicines(), loadTransactions()])
     pushNotice('success', 'Sale completed successfully.')
-  }, [cart, loadMedicines, loadTransactions, paymentMethod, pushNotice])
+  }, [cart, loadMedicines, loadTransactions, paymentMethod, pushNotice, saleSubmitting])
 
   const addMedicine = useCallback(
     async (payload) => {
@@ -758,23 +815,115 @@ function App() {
       }
 
       if (nextSettings.id) {
-        const { error } = await supabase.from('settings').update(payload).eq('id', nextSettings.id)
+        const { data, error } = await supabase
+          .from('settings')
+          .update(payload)
+          .eq('id', nextSettings.id)
+          .select('*')
+          .maybeSingle()
+
         if (error) {
           return { ok: false, message: error.message }
         }
-      } else {
-        const { data, error } = await supabase.from('settings').insert([payload]).select('*').single()
-        if (error) {
-          return { ok: false, message: error.message }
+
+        if (data) {
+          setSettings(mapSettingsRow(data))
+          pushNotice('success', 'Settings saved.')
+          return { ok: true }
         }
-        setSettings((prev) => ({ ...prev, id: data.id }))
       }
 
-      await loadSettings()
+      const { data, error } = await supabase.from('settings').insert([payload]).select('*').single()
+      if (error) {
+        return { ok: false, message: error.message }
+      }
+
+      setSettings(mapSettingsRow(data))
       pushNotice('success', 'Settings saved.')
       return { ok: true }
     },
-    [isAdmin, loadSettings, pushNotice],
+    [isAdmin, pushNotice],
+  )
+
+  const registerStaff = useCallback(
+    async (payload) => {
+      if (!isAdmin) {
+        return { ok: false, message: 'Only admins can register staff.' }
+      }
+
+      const fullName = String(payload.fullName || '').trim()
+      const email = String(payload.email || '').trim().toLowerCase()
+      const password = String(payload.password || '')
+
+      if (!fullName || !email || !password) {
+        return { ok: false, message: 'Name, email, and password are required.' }
+      }
+      if (password.length < 8) {
+        return { ok: false, message: 'Password must be at least 8 characters.' }
+      }
+
+      const onboardingClient = createNoSessionSupabaseClient()
+      if (!onboardingClient) {
+        return { ok: false, message: 'Supabase client unavailable.' }
+      }
+
+      const { data: signUpData, error: signUpError } = await onboardingClient.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullName,
+          },
+        },
+      })
+
+      if (signUpError) {
+        return { ok: false, message: signUpError.message }
+      }
+
+      const createdUserId = signUpData.user?.id
+      if (!createdUserId) {
+        return { ok: false, message: 'Unable to create staff account.' }
+      }
+
+      let profileReady = false
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const { data: profileRow, error: profileError } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('id', createdUserId)
+          .maybeSingle()
+
+        if (profileError) {
+          return { ok: false, message: profileError.message }
+        }
+
+        if (profileRow?.id) {
+          profileReady = true
+          break
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 250))
+      }
+
+      if (!profileReady) {
+        return { ok: false, message: 'Staff profile was not created yet. Please try again.' }
+      }
+
+      const { error: roleError } = await supabase
+        .from('profiles')
+        .update({ role: 'staff', full_name: fullName, email })
+        .eq('id', createdUserId)
+
+      if (roleError) {
+        return { ok: false, message: roleError.message }
+      }
+
+      await loadStaffProfiles()
+      pushNotice('success', 'Staff account registered.')
+      return { ok: true }
+    },
+    [isAdmin, loadStaffProfiles, pushNotice],
   )
 
   const updateStaffRole = useCallback(
@@ -819,6 +968,14 @@ function App() {
     )
   }
 
+  if (session?.user && profileLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 flex items-center justify-center">
+        <div className="text-sm text-slate-600">Loading your account...</div>
+      </div>
+    )
+  }
+
   if (!session?.user || !profile) {
     return <LoginScreen onLogin={handleLogin} />
   }
@@ -857,7 +1014,7 @@ function App() {
           onLogout={handleLogout}
         />
 
-        <main className="max-w-7xl mx-auto w-full p-4 md:p-6 space-y-4">
+        <main className="max-w-7xl mx-auto w-full p-3 sm:p-4 md:p-6 space-y-4">
           {notice ? (
             <div
               className={`rounded-xl border px-3 py-2 text-xs ${
@@ -897,6 +1054,7 @@ function App() {
               onUpdateQty={updateCartQty}
               onRemoveItem={removeCartItem}
               onCompleteSale={completeSale}
+              isSubmittingSale={saleSubmitting}
               subtotal={cartSubtotal}
               tax={cartTax}
               total={cartTotal}
@@ -940,6 +1098,7 @@ function App() {
               profiles={staffProfiles}
               onRefreshProfiles={loadStaffProfiles}
               onUpdateStaffRole={updateStaffRole}
+              onRegisterStaff={registerStaff}
             />
           ) : null}
         </main>
@@ -949,7 +1108,7 @@ function App() {
 }
 
 function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState('apdykadir41@gmail.com')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -974,13 +1133,15 @@ function LoginScreen({ onLogin }) {
         <h1 className="text-2xl font-semibold text-slate-900 mt-1">Login</h1>
         <p className="text-xs text-slate-500 mt-1">Sign in with your Supabase email and password.</p>
 
-        <form className="space-y-3 mt-4" onSubmit={submit}>
+        <form className="space-y-3 mt-4" onSubmit={submit} autoComplete="off">
           <Input
             label="Email"
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             placeholder="name@domain.com"
+            autoComplete="off"
+            name="login_email"
           />
           <Input
             label="Password"
@@ -988,6 +1149,8 @@ function LoginScreen({ onLogin }) {
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             placeholder="••••••••"
+            autoComplete="new-password"
+            name="login_password"
           />
 
           {error ? <p className="text-xs text-rose-600">{error}</p> : null}
@@ -1004,7 +1167,7 @@ function LoginScreen({ onLogin }) {
 function Sidebar({ activePage, isOpen, onClose, onNavigate }) {
   return (
     <aside
-      className={`fixed inset-y-0 left-0 z-40 w-64 bg-white/60 backdrop-blur-md border-r border-slate-200 transition-transform duration-200 md:translate-x-0 ${
+      className={`fixed inset-y-0 left-0 z-40 w-64 overflow-y-auto bg-white/60 backdrop-blur-md border-r border-slate-200 transition-transform duration-200 md:translate-x-0 ${
         isOpen ? 'translate-x-0' : '-translate-x-full'
       }`}
     >
@@ -1137,6 +1300,18 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
           </div>
         </div>
       </div>
+
+      <div className="px-4 pb-3 md:hidden">
+        <div className="rounded-xl border border-slate-200 bg-white px-3 h-9 flex items-center gap-2">
+          <Search size={15} className="text-slate-400" />
+          <input
+            value={searchValue}
+            onChange={(event) => onSearchChange(event.target.value)}
+            className="w-full bg-transparent outline-none text-sm placeholder:text-slate-400"
+            placeholder="Search medicines, sku, categories..."
+          />
+        </div>
+      </div>
     </header>
   )
 }
@@ -1208,6 +1383,7 @@ function POSPage({
   onUpdateQty,
   onRemoveItem,
   onCompleteSale,
+  isSubmittingSale,
   subtotal,
   tax,
   total,
@@ -1299,7 +1475,7 @@ function POSPage({
         </div>
       </Card>
 
-      <Card className="sticky top-[72px]" title="Digital Receipt" subtitle={`Items: ${totalItems}`}>
+      <Card className="xl:sticky xl:top-[72px]" title="Digital Receipt" subtitle={`Items: ${totalItems}`}>
         <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
           {cart.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500 text-center">
@@ -1359,6 +1535,7 @@ function POSPage({
                 key={method}
                 type="button"
                 onClick={() => onPaymentMethodChange(method)}
+                disabled={isSubmittingSale}
                 className={`h-8 rounded-lg text-xs border capitalize ${
                   paymentMethod === method
                     ? 'bg-indigo-600 border-indigo-600 text-white'
@@ -1386,8 +1563,13 @@ function POSPage({
           </div>
         </div>
 
-        <Button className="w-full mt-3" onClick={() => void onCompleteSale()} icon={CreditCard}>
-          Complete Sale
+        <Button
+          className="w-full mt-3"
+          onClick={() => void onCompleteSale()}
+          icon={CreditCard}
+          disabled={cart.length === 0 || isSubmittingSale}
+        >
+          {isSubmittingSale ? 'Processing...' : 'Complete Sale'}
         </Button>
       </Card>
     </div>
@@ -1481,7 +1663,7 @@ function InventoryPage({
         title="Inventory"
         subtitle="Supabase-backed medicines"
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <select
               value={category}
               onChange={(event) => setCategory(event.target.value)}
@@ -1659,7 +1841,7 @@ function FinancePage({
         title="Finance Filters"
         subtitle="Use custom date range or quick presets"
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               size="sm"
               variant={range.preset === '30' ? 'primary' : 'secondary'}
@@ -1745,9 +1927,18 @@ function SettingsPage({
   profiles,
   onRefreshProfiles,
   onUpdateStaffRole,
+  onRegisterStaff,
 }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [showStaffModal, setShowStaffModal] = useState(false)
+  const [staffSubmitting, setStaffSubmitting] = useState(false)
+  const [staffError, setStaffError] = useState('')
+  const [staffForm, setStaffForm] = useState({
+    fullName: '',
+    email: '',
+    password: '',
+  })
 
   const save = async () => {
     setSaving(true)
@@ -1757,6 +1948,31 @@ function SettingsPage({
       setError(result.message)
     }
     setSaving(false)
+  }
+
+  const submitStaff = async (event) => {
+    event.preventDefault()
+    setStaffSubmitting(true)
+    setStaffError('')
+
+    const result = await onRegisterStaff(staffForm)
+    if (!result.ok) {
+      setStaffError(result.message)
+      setStaffSubmitting(false)
+      return
+    }
+
+    setStaffForm({ fullName: '', email: '', password: '' })
+    setShowStaffModal(false)
+    setStaffSubmitting(false)
+  }
+
+  const handleRoleChange = async (profileId, role) => {
+    setStaffError('')
+    const result = await onUpdateStaffRole(profileId, role)
+    if (!result.ok) {
+      setStaffError(result.message)
+    }
   }
 
   return (
@@ -1825,17 +2041,24 @@ function SettingsPage({
         <Card
           className="xl:col-span-2"
           title="Staff Management"
-          subtitle="Manage profile roles (users must exist in Supabase Auth)"
+          subtitle="Create staff accounts and manage profile roles"
           action={
-            <Button size="sm" variant="secondary" icon={RefreshCcw} onClick={() => void onRefreshProfiles()}>
-              Refresh
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button size="sm" icon={Users} onClick={() => setShowStaffModal(true)}>
+                Add Staff
+              </Button>
+              <Button size="sm" variant="secondary" icon={RefreshCcw} onClick={() => void onRefreshProfiles()}>
+                Refresh
+              </Button>
+            </div>
           }
         >
+          {staffError ? <p className="text-xs text-rose-600 mb-2">{staffError}</p> : null}
           <Table
             columns={[
               { label: 'Name' },
               { label: 'Email' },
+              { label: 'Status' },
               { label: 'Role' },
               { label: 'Created' },
             ]}
@@ -1845,10 +2068,13 @@ function SettingsPage({
                 <td className="px-3 py-2 text-xs text-slate-800">{row.full_name || 'User'}</td>
                 <td className="px-3 py-2 text-xs text-slate-600">{row.email}</td>
                 <td className="px-3 py-2 text-xs">
+                  <Badge tone="emerald">Active</Badge>
+                </td>
+                <td className="px-3 py-2 text-xs">
                   <select
                     className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs outline-none"
                     value={row.role}
-                    onChange={(event) => void onUpdateStaffRole(row.id, event.target.value)}
+                    onChange={(event) => void handleRoleChange(row.id, event.target.value)}
                   >
                     <option value="staff">staff</option>
                     <option value="admin">admin</option>
@@ -1866,6 +2092,58 @@ function SettingsPage({
           </div>
         </Card>
       )}
+
+      <Modal
+        open={showStaffModal}
+        onClose={() => setShowStaffModal(false)}
+        title="Add Staff Account"
+        description="Creates a Supabase Auth user and sets profile role to staff."
+      >
+        <form className="space-y-3" onSubmit={(event) => void submitStaff(event)}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Full Name"
+              value={staffForm.fullName}
+              onChange={(event) =>
+                setStaffForm((prev) => ({ ...prev, fullName: event.target.value }))
+              }
+            />
+            <Input
+              label="Email"
+              type="email"
+              value={staffForm.email}
+              onChange={(event) => setStaffForm((prev) => ({ ...prev, email: event.target.value }))}
+            />
+            <Input
+              label="Password"
+              type="password"
+              value={staffForm.password}
+              onChange={(event) =>
+                setStaffForm((prev) => ({ ...prev, password: event.target.value }))
+              }
+            />
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <p className="text-xs text-slate-500">Role</p>
+              <p className="text-sm font-medium text-slate-900 mt-1">staff</p>
+            </div>
+          </div>
+
+          {staffError ? <p className="text-xs text-rose-600">{staffError}</p> : null}
+
+          <p className="text-xs text-slate-500">
+            Password must be 8+ characters. If email confirmation is enabled in Supabase, the user must verify first.
+          </p>
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setShowStaffModal(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" icon={Users} disabled={staffSubmitting}>
+              {staffSubmitting ? 'Creating...' : 'Create Staff'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   )
 }
@@ -1919,12 +2197,12 @@ function Card({ title, subtitle, action, children, className = '' }) {
   return (
     <section className={`bg-white rounded-2xl shadow-sm border border-slate-100 p-4 ${className}`}>
       {title || subtitle || action ? (
-        <div className="mb-3 flex items-start justify-between gap-2">
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
             {title ? <h2 className="text-lg font-semibold text-slate-900">{title}</h2> : null}
             {subtitle ? <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p> : null}
           </div>
-          {action ? <div>{action}</div> : null}
+          {action ? <div className="sm:self-start">{action}</div> : null}
         </div>
       ) : null}
       {children}

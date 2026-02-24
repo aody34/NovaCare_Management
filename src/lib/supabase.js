@@ -8,3 +8,17 @@ const supabaseKey = String(
 export const hasSupabaseEnv = Boolean(supabaseUrl && supabaseKey)
 
 export const supabase = hasSupabaseEnv ? createClient(supabaseUrl, supabaseKey) : null
+
+export function createNoSessionSupabaseClient() {
+  if (!hasSupabaseEnv) {
+    return null
+  }
+
+  return createClient(supabaseUrl, supabaseKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  })
+}
