@@ -8,13 +8,15 @@ const supabaseKey = String(
 export const hasSupabaseEnv = Boolean(supabaseUrl && supabaseKey)
 
 const nonBlockingLock = async (_name, _timeout, acquire) => acquire()
+const authStorage = typeof window !== 'undefined' ? window.sessionStorage : undefined
 
 export const supabase = hasSupabaseEnv
   ? createClient(supabaseUrl, supabaseKey, {
       auth: {
         lock: nonBlockingLock,
-        persistSession: false,
-        autoRefreshToken: false,
+        storage: authStorage,
+        persistSession: true,
+        autoRefreshToken: true,
         detectSessionInUrl: false,
       },
     })
