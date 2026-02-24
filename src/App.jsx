@@ -386,6 +386,7 @@ function App() {
     }
 
     let mounted = true
+    let authTimeoutId = null
 
     const clearSessionState = () => {
       setProfileLoading(false)
@@ -397,6 +398,12 @@ function App() {
       setCart([])
       setSaleSubmitting(false)
     }
+
+    authTimeoutId = window.setTimeout(() => {
+      if (mounted) {
+        setAuthLoading(false)
+      }
+    }, 4000)
 
     const bootstrap = async () => {
       try {
@@ -429,6 +436,10 @@ function App() {
         setProfile(nextProfile)
       } finally {
         if (mounted) {
+          if (authTimeoutId) {
+            window.clearTimeout(authTimeoutId)
+            authTimeoutId = null
+          }
           setAuthLoading(false)
           setProfileLoading(false)
         }
@@ -440,8 +451,12 @@ function App() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
-      if (!mounted || event === 'INITIAL_SESSION') {
+      if (!mounted) {
         return
+      }
+
+      if (event === 'INITIAL_SESSION') {
+        setAuthLoading(false)
       }
 
       setSession(nextSession)
@@ -462,6 +477,9 @@ function App() {
 
     return () => {
       mounted = false
+      if (authTimeoutId) {
+        window.clearTimeout(authTimeoutId)
+      }
       subscription.unsubscribe()
     }
   }, [loadProfile, pushNotice])
