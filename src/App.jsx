@@ -995,27 +995,12 @@ function App() {
     )
   }
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-slate-50 text-slate-800 flex items-center justify-center">
-        <div className="text-sm text-slate-600">Loading authentication...</div>
-      </div>
-    )
-  }
-
-  if (session?.user && profileLoading) {
-    return (
-      <div className="min-h-screen bg-slate-50 text-slate-800 flex items-center justify-center">
-        <div className="text-sm text-slate-600">Loading your account...</div>
-      </div>
-    )
-  }
-
   if (!session?.user || !profile) {
     return <LoginScreen onLogin={handleLogin} />
   }
 
   const userDisplayName = profile.full_name || profile.email || 'User'
+  const authSyncing = authLoading || profileLoading
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 text-sm">
@@ -1050,6 +1035,12 @@ function App() {
         />
 
         <main className="max-w-7xl mx-auto w-full p-3 sm:p-4 md:p-6 space-y-4">
+          {authSyncing ? (
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+              Syncing account state...
+            </div>
+          ) : null}
+
           {notice ? (
             <div
               className={`rounded-xl border px-3 py-2 text-xs ${
