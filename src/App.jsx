@@ -179,6 +179,15 @@ function statusTone(status) {
   return 'emerald'
 }
 
+function getNavigationType() {
+  if (typeof window === 'undefined' || typeof window.performance === 'undefined') {
+    return 'navigate'
+  }
+
+  const entries = window.performance.getEntriesByType?.('navigation') || []
+  return entries[0]?.type || 'navigate'
+}
+
 function mapSettingsRow(row) {
   if (!row) {
     return DEFAULT_SETTINGS
@@ -407,6 +416,17 @@ function App() {
 
     const bootstrap = async () => {
       try {
+        if (getNavigationType() === 'navigate') {
+          await supabase.auth.signOut()
+          if (!mounted) {
+            return
+          }
+          clearSessionState()
+          setSession(null)
+          setAuthLoading(false)
+          return
+        }
+
         const {
           data: { session: currentSession },
           error,
