@@ -24,7 +24,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react'
-import { supabase } from './lib/supabase'
+import { hasSupabaseEnv, supabase } from './lib/supabase'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -180,9 +180,6 @@ function statusTone(status) {
 }
 
 function App() {
-  const hasSupabaseEnv =
-    Boolean(import.meta.env.VITE_SUPABASE_URL) && Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY)
-
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -431,7 +428,7 @@ function App() {
       mounted = false
       subscription.unsubscribe()
     }
-  }, [hasSupabaseEnv, loadProfile, pushNotice])
+  }, [loadProfile, pushNotice])
 
   useEffect(() => {
     if (!session?.user || !profile?.role) {
