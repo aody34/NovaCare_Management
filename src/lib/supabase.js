@@ -13,6 +13,9 @@ export const supabase = hasSupabaseEnv
   ? createClient(supabaseUrl, supabaseKey, {
       auth: {
         lock: nonBlockingLock,
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
       },
     })
   : null
