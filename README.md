@@ -38,6 +38,8 @@ Create `.env.local` in project root:
 ```bash
 VITE_SUPABASE_URL=https://kcxmleqrwusdyfiikbmj.supabase.co
 VITE_SUPABASE_ANON_KEY=your_anon_key_here
+# or use publishable key name:
+# VITE_SUPABASE_PUBLISHABLE_KEY=your_publishable_key_here
 ```
 
 The client is initialized in:

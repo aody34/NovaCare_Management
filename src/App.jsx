@@ -803,7 +803,8 @@ function App() {
         <div className="max-w-xl mx-auto bg-white rounded-2xl border border-slate-200 p-5">
           <h1 className="text-lg font-semibold">Supabase Environment Missing</h1>
           <p className="text-sm text-slate-600 mt-2">
-            Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to your env file.
+            Add <code>VITE_SUPABASE_URL</code> and either <code>VITE_SUPABASE_ANON_KEY</code> or{' '}
+            <code>VITE_SUPABASE_PUBLISHABLE_KEY</code> to your env file.
           </p>
         </div>
       </div>
