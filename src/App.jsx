@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   Boxes,
@@ -7,22 +7,24 @@ import {
   CreditCard,
   DollarSign,
   Edit3,
+  LayoutDashboard,
   LogOut,
   Menu,
   Minus,
   Package,
   Plus,
   Receipt,
+  RefreshCcw,
   Search,
   Settings,
   Shield,
   ShoppingCart,
+  Trash2,
   Users,
   Wallet,
   X,
-  LayoutDashboard,
-  Trash2,
 } from 'lucide-react'
+import { supabase } from './lib/supabase'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -40,155 +42,18 @@ const PAGE_TITLES = {
   settings: 'Settings',
 }
 
-const PAYMENT_METHODS = ['Cash', 'Card', 'Insurance']
+const PAYMENT_METHODS = ['cash', 'card', 'insurance']
 const LOW_STOCK_THRESHOLD = 10
 
-const SEED_USERS = [
-  {
-    id: 'USR-001',
-    name: 'Admin User',
-    email: 'admin@pharmacy.com',
-    password: 'Admin123!',
-    role: 'admin',
-    active: true,
-  },
-]
-
-const SEED_SETTINGS = {
-  storeName: 'NovaCare Pharmacy',
+const DEFAULT_SETTINGS = {
+  id: null,
+  store_name: 'NovaCare Pharmacy',
   currency: 'USD',
-  taxRate: 7.5,
-  pricesIncludeTax: false,
-  address: '145 Cedar Avenue, Portland, OR 97204',
-  phone: '+1 (503) 555-0144',
-  supportEmail: 'support@novacarepharmacy.com',
-}
-
-const SEED_MEDICINES = [
-  {
-    sku: 'MED-1001',
-    name: 'Paracetamol 500mg',
-    category: 'Pain Relief',
-    price: 4.5,
-    stock: 52,
-    expiryDate: '2027-03-14',
-  },
-  {
-    sku: 'MED-1002',
-    name: 'Ibuprofen 200mg',
-    category: 'Pain Relief',
-    price: 6.2,
-    stock: 9,
-    expiryDate: '2027-11-20',
-  },
-  {
-    sku: 'MED-1003',
-    name: 'Amoxicillin 250mg',
-    category: 'Antibiotic',
-    price: 12.9,
-    stock: 18,
-    expiryDate: '2026-08-10',
-  },
-  {
-    sku: 'MED-1004',
-    name: 'Metformin 500mg',
-    category: 'Diabetes',
-    price: 10.8,
-    stock: 35,
-    expiryDate: '2027-01-22',
-  },
-  {
-    sku: 'MED-1005',
-    name: 'Lisinopril 10mg',
-    category: 'Cardiology',
-    price: 8.4,
-    stock: 7,
-    expiryDate: '2026-05-01',
-  },
-  {
-    sku: 'MED-1006',
-    name: 'Cetirizine 10mg',
-    category: 'Allergy',
-    price: 5.95,
-    stock: 41,
-    expiryDate: '2028-02-18',
-  },
-  {
-    sku: 'MED-1007',
-    name: 'Omeprazole 20mg',
-    category: 'Digestive',
-    price: 9.15,
-    stock: 12,
-    expiryDate: '2026-10-05',
-  },
-  {
-    sku: 'MED-1008',
-    name: 'Insulin Glargine',
-    category: 'Diabetes',
-    price: 42.4,
-    stock: 4,
-    expiryDate: '2025-12-01',
-  },
-]
-
-function daysAgoIso(daysAgo, hour = 11) {
-  const date = new Date()
-  date.setHours(hour, 15, 0, 0)
-  date.setDate(date.getDate() - daysAgo)
-  return date.toISOString()
-}
-
-const SEED_TRANSACTIONS = [
-  {
-    id: 'TX-430112',
-    datetime: daysAgoIso(6),
-    items: [
-      { sku: 'MED-1001', name: 'Paracetamol 500mg', qty: 2, price: 4.5 },
-      { sku: 'MED-1006', name: 'Cetirizine 10mg', qty: 1, price: 5.95 },
-    ],
-    itemsCount: 3,
-    subtotal: 14.95,
-    tax: 1.12,
-    total: 16.07,
-    paymentMethod: 'Cash',
-  },
-  {
-    id: 'TX-430113',
-    datetime: daysAgoIso(4),
-    items: [{ sku: 'MED-1003', name: 'Amoxicillin 250mg', qty: 1, price: 12.9 }],
-    itemsCount: 1,
-    subtotal: 12.9,
-    tax: 0.97,
-    total: 13.87,
-    paymentMethod: 'Card',
-  },
-  {
-    id: 'TX-430114',
-    datetime: daysAgoIso(2),
-    items: [
-      { sku: 'MED-1002', name: 'Ibuprofen 200mg', qty: 1, price: 6.2 },
-      { sku: 'MED-1004', name: 'Metformin 500mg', qty: 2, price: 10.8 },
-    ],
-    itemsCount: 3,
-    subtotal: 27.8,
-    tax: 2.09,
-    total: 29.89,
-    paymentMethod: 'Insurance',
-  },
-  {
-    id: 'TX-430115',
-    datetime: daysAgoIso(1),
-    items: [{ sku: 'MED-1007', name: 'Omeprazole 20mg', qty: 1, price: 9.15 }],
-    itemsCount: 1,
-    subtotal: 9.15,
-    tax: 0.69,
-    total: 9.84,
-    paymentMethod: 'Card',
-  },
-]
-
-function normalizeEmail(value) {
-  return value.trim().toLowerCase()
+  tax_rate: 0,
+  prices_include_tax: false,
+  address: '',
+  phone: '',
+  support_email: '',
 }
 
 function formatCurrency(value, currency = 'USD') {
@@ -196,7 +61,7 @@ function formatCurrency(value, currency = 'USD') {
     style: 'currency',
     currency,
     maximumFractionDigits: 2,
-  }).format(value)
+  }).format(Number(value || 0))
 }
 
 function formatDateTime(value) {
@@ -208,410 +73,759 @@ function formatDateTime(value) {
   }).format(new Date(value))
 }
 
-function roundMoney(value) {
-  return Number((value || 0).toFixed(2))
+function formatDateInput(date) {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
-function getMedicineStatus(medicine) {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const expiry = new Date(`${medicine.expiryDate}T00:00:00`)
-
-  if (expiry < today) {
-    return 'Expired'
+function parseDateKey(value) {
+  if (!value) {
+    return null
   }
-  if (Number(medicine.stock) <= LOW_STOCK_THRESHOLD) {
-    return 'Low Stock'
+  const date = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(date.getTime())) {
+    return null
   }
-  return 'In Stock'
-}
-
-function build7DaySeries(transactions) {
-  const byDay = {}
-  for (const tx of transactions) {
-    const key = tx.datetime.slice(0, 10)
-    if (!byDay[key]) {
-      byDay[key] = { total: 0, count: 0 }
-    }
-    byDay[key].total += Number(tx.total)
-    byDay[key].count += 1
-  }
-
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(today)
-    date.setDate(today.getDate() - (6 - index))
-    const key = date.toISOString().slice(0, 10)
-    const label = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date)
-    return {
-      key,
-      label,
-      total: roundMoney(byDay[key]?.total || 0),
-      count: byDay[key]?.count || 0,
-    }
-  })
+  return date
 }
 
 function getInitials(name) {
-  return name
+  return String(name || 'US')
     .split(' ')
+    .filter(Boolean)
     .map((part) => part[0])
     .join('')
     .slice(0, 2)
     .toUpperCase()
 }
 
+function medicineStatus(item) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  if (item.expiry) {
+    const expiry = new Date(`${item.expiry}T00:00:00`)
+    if (!Number.isNaN(expiry.getTime()) && expiry < today) {
+      return 'Expired'
+    }
+  }
+
+  if (Number(item.stock) <= LOW_STOCK_THRESHOLD) {
+    return 'Low Stock'
+  }
+
+  return 'In Stock'
+}
+
+function buildSeries(transactions, fromValue, toValue) {
+  const from = parseDateKey(fromValue)
+  const to = parseDateKey(toValue)
+  if (!from || !to) {
+    return []
+  }
+
+  const start = new Date(Math.min(from.getTime(), to.getTime()))
+  const end = new Date(Math.max(from.getTime(), to.getTime()))
+
+  const totalsByDay = {}
+  for (const transaction of transactions) {
+    const key = transaction.createdAt.slice(0, 10)
+    totalsByDay[key] = (totalsByDay[key] || 0) + Number(transaction.total)
+  }
+
+  const result = []
+  const cursor = new Date(start)
+
+  while (cursor <= end) {
+    const key = cursor.toISOString().slice(0, 10)
+    const label = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(cursor)
+    result.push({
+      key,
+      label,
+      total: Number((totalsByDay[key] || 0).toFixed(2)),
+    })
+    cursor.setDate(cursor.getDate() + 1)
+  }
+
+  return result
+}
+
+function rangeFilter(transactions, fromValue, toValue) {
+  const from = parseDateKey(fromValue)
+  const to = parseDateKey(toValue)
+  if (!from || !to) {
+    return transactions
+  }
+
+  const start = new Date(Math.min(from.getTime(), to.getTime()))
+  const end = new Date(Math.max(from.getTime(), to.getTime()))
+  end.setHours(23, 59, 59, 999)
+
+  return transactions.filter((transaction) => {
+    const createdAt = new Date(transaction.createdAt)
+    return createdAt >= start && createdAt <= end
+  })
+}
+
+function statusTone(status) {
+  if (status === 'Expired') {
+    return 'rose'
+  }
+  if (status === 'Low Stock') {
+    return 'amber'
+  }
+  return 'emerald'
+}
+
 function App() {
-  const [users, setUsers] = useState(SEED_USERS)
-  const [currentUser, setCurrentUser] = useState(null)
+  const hasSupabaseEnv =
+    Boolean(import.meta.env.VITE_SUPABASE_URL) && Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY)
+
+  const [session, setSession] = useState(null)
+  const [profile, setProfile] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [appLoading, setAppLoading] = useState(false)
 
   const [activePage, setActivePage] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [headerSearch, setHeaderSearch] = useState('')
 
-  const [settings, setSettings] = useState(SEED_SETTINGS)
-  const [inventory, setInventory] = useState(SEED_MEDICINES)
-  const [transactions, setTransactions] = useState(SEED_TRANSACTIONS)
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
+  const [medicines, setMedicines] = useState([])
+  const [transactions, setTransactions] = useState([])
+  const [staffProfiles, setStaffProfiles] = useState([])
 
   const [cart, setCart] = useState([])
   const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS[0])
 
-  const [flash, setFlash] = useState(null)
+  const [financeRange, setFinanceRange] = useState(() => {
+    const to = new Date()
+    const from = new Date()
+    from.setDate(to.getDate() - 29)
+    return {
+      from: formatDateInput(from),
+      to: formatDateInput(to),
+      preset: '30',
+    }
+  })
+
+  const [notice, setNotice] = useState(null)
+
+  const pushNotice = useCallback((type, message) => {
+    setNotice({ type, message })
+    window.clearTimeout(pushNotice.timer)
+    pushNotice.timer = window.setTimeout(() => setNotice(null), 3200)
+  }, [])
+
+  const loadProfile = useCallback(async (user) => {
+    if (!user?.id) {
+      return null
+    }
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id,email,full_name,role,created_at')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    if (error) {
+      pushNotice('error', error.message)
+      return null
+    }
+
+    if (data) {
+      return data
+    }
+
+    return {
+      id: user.id,
+      email: user.email || '',
+      full_name: user.user_metadata?.full_name || user.email || 'User',
+      role: 'staff',
+      created_at: new Date().toISOString(),
+    }
+  }, [pushNotice])
+
+  const loadSettings = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('settings')
+      .select('*')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+
+    if (error) {
+      pushNotice('error', error.message)
+      return
+    }
+
+    const row = data?.[0]
+    if (!row) {
+      setSettings(DEFAULT_SETTINGS)
+      return
+    }
+
+    setSettings({
+      id: row.id,
+      store_name: row.store_name || DEFAULT_SETTINGS.store_name,
+      currency: row.currency || 'USD',
+      tax_rate: Number(row.tax_rate || 0),
+      prices_include_tax: Boolean(row.prices_include_tax),
+      address: row.address || '',
+      phone: row.phone || '',
+      support_email: row.support_email || '',
+    })
+  }, [pushNotice])
+
+  const loadMedicines = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('medicines')
+      .select('id,sku,name,category,price,stock,expiry,created_at')
+      .order('name', { ascending: true })
+
+    if (error) {
+      pushNotice('error', error.message)
+      return
+    }
+
+    const mapped = (data || []).map((item) => ({
+      id: item.id,
+      sku: item.sku,
+      name: item.name,
+      category: item.category || 'General',
+      price: Number(item.price || 0),
+      stock: Number(item.stock || 0),
+      expiry: item.expiry,
+      createdAt: item.created_at,
+    }))
+
+    setMedicines(mapped)
+  }, [pushNotice])
+
+  const loadTransactions = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select(
+        'id,user_id,total,tax,payment_method,created_at,transaction_items(qty,unit_price,line_total,medicine_id,medicines(name,sku))',
+      )
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      pushNotice('error', error.message)
+      return
+    }
+
+    const mapped = (data || []).map((item) => {
+      const items = item.transaction_items || []
+      return {
+        id: item.id,
+        userId: item.user_id,
+        total: Number(item.total || 0),
+        tax: Number(item.tax || 0),
+        paymentMethod: item.payment_method,
+        createdAt: item.created_at,
+        itemsCount: items.reduce((sum, row) => sum + Number(row.qty || 0), 0),
+        items: items.map((row) => ({
+          medicineId: row.medicine_id,
+          name: row.medicines?.name || 'Medicine',
+          sku: row.medicines?.sku || '-',
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unit_price || 0),
+          lineTotal: Number(row.line_total || 0),
+        })),
+      }
+    })
+
+    setTransactions(mapped)
+  }, [pushNotice])
+
+  const loadStaffProfiles = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id,email,full_name,role,created_at')
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      pushNotice('error', error.message)
+      return
+    }
+
+    setStaffProfiles(data || [])
+  }, [pushNotice])
+
+  const loadAll = useCallback(async (role) => {
+    setAppLoading(true)
+    try {
+      if (role === 'admin') {
+        await Promise.all([loadSettings(), loadMedicines(), loadTransactions(), loadStaffProfiles()])
+      } else {
+        await Promise.all([loadSettings(), loadMedicines(), loadTransactions()])
+        setStaffProfiles([])
+      }
+    } finally {
+      setAppLoading(false)
+    }
+  }, [loadMedicines, loadSettings, loadStaffProfiles, loadTransactions])
+
+  useEffect(() => {
+    if (!hasSupabaseEnv) {
+      setAuthLoading(false)
+      return undefined
+    }
+
+    let mounted = true
+
+    const bootstrap = async () => {
+      const {
+        data: { session: currentSession },
+        error,
+      } = await supabase.auth.getSession()
+
+      if (!mounted) {
+        return
+      }
+
+      if (error) {
+        pushNotice('error', error.message)
+      }
+
+      setSession(currentSession)
+      if (currentSession?.user) {
+        const nextProfile = await loadProfile(currentSession.user)
+        if (mounted) {
+          setProfile(nextProfile)
+        }
+      }
+      setAuthLoading(false)
+    }
+
+    void bootstrap()
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+      if (!mounted) {
+        return
+      }
+
+      setSession(nextSession)
+
+      if (nextSession?.user) {
+        const nextProfile = await loadProfile(nextSession.user)
+        if (!mounted) {
+          return
+        }
+        setProfile(nextProfile)
+      } else {
+        setProfile(null)
+        setMedicines([])
+        setTransactions([])
+        setStaffProfiles([])
+        setSettings(DEFAULT_SETTINGS)
+        setCart([])
+      }
+    })
+
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
+  }, [hasSupabaseEnv, loadProfile, pushNotice])
+
+  useEffect(() => {
+    if (!session?.user || !profile?.role) {
+      return
+    }
+    void loadAll(profile.role)
+  }, [session, profile, loadAll])
+
+  useEffect(() => {
+    setCart((prev) => {
+      return prev
+        .map((item) => {
+          const fresh = medicines.find((medicine) => medicine.id === item.medicineId)
+          if (!fresh) {
+            return null
+          }
+          return {
+            ...item,
+            name: fresh.name,
+            price: fresh.price,
+            stock: fresh.stock,
+            qty: Math.min(item.qty, fresh.stock),
+          }
+        })
+        .filter((item) => item && item.qty > 0)
+    })
+  }, [medicines])
+
+  const isAdmin = profile?.role === 'admin'
 
   const inventoryWithStatus = useMemo(
-    () => inventory.map((item) => ({ ...item, status: getMedicineStatus(item) })),
-    [inventory],
+    () => medicines.map((item) => ({ ...item, status: medicineStatus(item) })),
+    [medicines],
   )
 
-  const categories = useMemo(() => {
+  const categoryOptions = useMemo(() => {
     const set = new Set(inventoryWithStatus.map((item) => item.category))
     return ['All', ...Array.from(set)]
   }, [inventoryWithStatus])
 
-  const dailySeries = useMemo(() => build7DaySeries(transactions), [transactions])
-
-  const paymentBreakdown = useMemo(() => {
-    return PAYMENT_METHODS.map((method) => {
-      const total = transactions
-        .filter((tx) => tx.paymentMethod === method)
-        .reduce((sum, tx) => sum + tx.total, 0)
-      return { method, total: roundMoney(total) }
-    })
-  }, [transactions])
-
-  const dashboardStats = useMemo(() => {
-    const revenue = transactions.reduce((sum, tx) => sum + tx.total, 0)
-    const transactionsCount = transactions.length
-    const stockValue = inventoryWithStatus.reduce((sum, med) => sum + med.price * med.stock, 0)
-    const lowStockCount = inventoryWithStatus.filter((med) => med.status === 'Low Stock').length
-    return {
-      revenue: roundMoney(revenue),
-      transactionsCount,
-      stockValue: roundMoney(stockValue),
-      lowStockCount,
-    }
-  }, [transactions, inventoryWithStatus])
-
-  const inventorySignals = useMemo(() => {
-    return {
-      lowStock: inventoryWithStatus.filter((med) => med.status === 'Low Stock').length,
-      expired: inventoryWithStatus.filter((med) => med.status === 'Expired').length,
-    }
-  }, [inventoryWithStatus])
-
   const cartSubtotal = useMemo(
-    () => roundMoney(cart.reduce((sum, item) => sum + item.price * item.qty, 0)),
+    () => Number(cart.reduce((sum, item) => sum + item.price * item.qty, 0).toFixed(2)),
     [cart],
   )
 
   const cartTax = useMemo(() => {
-    const rate = Number(settings.taxRate) / 100
+    const rate = Number(settings.tax_rate || 0) / 100
     if (!rate || cartSubtotal <= 0) {
       return 0
     }
-    if (settings.pricesIncludeTax) {
-      return roundMoney(cartSubtotal - cartSubtotal / (1 + rate))
+    if (settings.prices_include_tax) {
+      return Number((cartSubtotal - cartSubtotal / (1 + rate)).toFixed(2))
     }
-    return roundMoney(cartSubtotal * rate)
-  }, [cartSubtotal, settings.taxRate, settings.pricesIncludeTax])
+    return Number((cartSubtotal * rate).toFixed(2))
+  }, [cartSubtotal, settings.prices_include_tax, settings.tax_rate])
 
   const cartTotal = useMemo(() => {
-    if (settings.pricesIncludeTax) {
+    if (settings.prices_include_tax) {
       return cartSubtotal
     }
-    return roundMoney(cartSubtotal + cartTax)
-  }, [cartSubtotal, cartTax, settings.pricesIncludeTax])
+    return Number((cartSubtotal + cartTax).toFixed(2))
+  }, [cartSubtotal, cartTax, settings.prices_include_tax])
 
-  const notify = (type, message) => {
-    setFlash({ type, message })
-    window.clearTimeout(notify.timer)
-    notify.timer = window.setTimeout(() => {
-      setFlash(null)
-    }, 3200)
-  }
-
-  const handleLogin = ({ email, password }) => {
-    const user = users.find((item) => normalizeEmail(item.email) === normalizeEmail(email))
-    if (!user || user.password !== password) {
-      return { ok: false, message: 'Invalid email or password.' }
+  const dashboardStats = useMemo(() => {
+    const revenue = transactions.reduce((sum, row) => sum + row.total, 0)
+    const transactionsCount = transactions.length
+    const stockValue = inventoryWithStatus.reduce((sum, row) => sum + row.price * row.stock, 0)
+    const lowStock = inventoryWithStatus.filter((row) => row.status === 'Low Stock').length
+    return {
+      revenue: Number(revenue.toFixed(2)),
+      transactionsCount,
+      stockValue: Number(stockValue.toFixed(2)),
+      lowStock,
     }
-    if (!user.active) {
-      return { ok: false, message: 'This account is inactive. Contact an administrator.' }
-    }
+  }, [inventoryWithStatus, transactions])
 
-    setCurrentUser({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      active: user.active,
+  const inventorySignals = useMemo(() => {
+    return {
+      lowStock: inventoryWithStatus.filter((item) => item.status === 'Low Stock').length,
+      expired: inventoryWithStatus.filter((item) => item.status === 'Expired').length,
+    }
+  }, [inventoryWithStatus])
+
+  const filteredFinanceTransactions = useMemo(
+    () => rangeFilter(transactions, financeRange.from, financeRange.to),
+    [transactions, financeRange.from, financeRange.to],
+  )
+
+  const financeSeries = useMemo(
+    () => buildSeries(filteredFinanceTransactions, financeRange.from, financeRange.to),
+    [filteredFinanceTransactions, financeRange.from, financeRange.to],
+  )
+
+  const financePaymentBreakdown = useMemo(() => {
+    return PAYMENT_METHODS.map((method) => {
+      const total = filteredFinanceTransactions
+        .filter((row) => row.paymentMethod === method)
+        .reduce((sum, row) => sum + row.total, 0)
+      return { method, total: Number(total.toFixed(2)) }
     })
-    setActivePage('dashboard')
-    setSidebarOpen(false)
-    setHeaderSearch('')
-    return { ok: true }
-  }
+  }, [filteredFinanceTransactions])
 
-  const handleLogout = () => {
-    setCurrentUser(null)
+  const setFinancePreset = useCallback((days) => {
+    const end = new Date()
+    const start = new Date()
+    start.setDate(end.getDate() - (days - 1))
+    setFinanceRange({ from: formatDateInput(start), to: formatDateInput(end), preset: String(days) })
+  }, [])
+
+  const handleLogin = useCallback(
+    async ({ email, password }) => {
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) {
+        return { ok: false, message: error.message }
+      }
+      return { ok: true }
+    },
+    [],
+  )
+
+  const handleLogout = useCallback(async () => {
+    await supabase.auth.signOut()
+    setHeaderSearch('')
     setCart([])
     setPaymentMethod(PAYMENT_METHODS[0])
-    setHeaderSearch('')
-  }
+  }, [])
 
-  const canManageInventory = currentUser?.role === 'admin'
-  const canManageStaff = currentUser?.role === 'admin'
-
-  const addToCart = (medicine) => {
-    if (medicine.status === 'Expired') {
-      notify('error', `${medicine.name} is expired and cannot be sold.`)
-      return
-    }
-
-    const currentQty = cart.find((item) => item.sku === medicine.sku)?.qty || 0
-    if (currentQty >= medicine.stock) {
-      notify('error', `Insufficient stock for ${medicine.name}.`)
-      return
-    }
-
-    setCart((prev) => {
-      const exists = prev.find((item) => item.sku === medicine.sku)
-      if (!exists) {
-        return [
-          ...prev,
-          {
-            sku: medicine.sku,
-            name: medicine.name,
-            price: medicine.price,
-            qty: 1,
-          },
-        ]
+  const addToCart = useCallback(
+    (medicine) => {
+      if (medicine.status === 'Expired') {
+        pushNotice('error', `${medicine.name} is expired and cannot be sold.`)
+        return
       }
-      return prev.map((item) =>
-        item.sku === medicine.sku ? { ...item, qty: item.qty + 1 } : item,
-      )
-    })
-  }
 
-  const updateCartQty = (sku, nextQty) => {
+      const already = cart.find((item) => item.medicineId === medicine.id)?.qty || 0
+      if (already >= medicine.stock) {
+        pushNotice('error', `Insufficient stock for ${medicine.name}.`)
+        return
+      }
+
+      setCart((prev) => {
+        const exists = prev.find((item) => item.medicineId === medicine.id)
+        if (!exists) {
+          return [
+            ...prev,
+            {
+              medicineId: medicine.id,
+              sku: medicine.sku,
+              name: medicine.name,
+              price: medicine.price,
+              qty: 1,
+              stock: medicine.stock,
+            },
+          ]
+        }
+
+        return prev.map((item) =>
+          item.medicineId === medicine.id ? { ...item, qty: item.qty + 1 } : item,
+        )
+      })
+    },
+    [cart, pushNotice],
+  )
+
+  const updateCartQty = useCallback((medicineId, nextQty) => {
     if (nextQty <= 0) {
-      setCart((prev) => prev.filter((item) => item.sku !== sku))
+      setCart((prev) => prev.filter((item) => item.medicineId !== medicineId))
       return
     }
-
-    const source = inventoryWithStatus.find((item) => item.sku === sku)
-    const maxQty = source?.stock || 0
 
     setCart((prev) =>
-      prev.map((item) =>
-        item.sku === sku
-          ? {
-              ...item,
-              qty: Math.min(nextQty, maxQty),
-            }
-          : item,
-      ),
+      prev
+        .map((item) => {
+          if (item.medicineId !== medicineId) {
+            return item
+          }
+          return { ...item, qty: Math.min(nextQty, item.stock) }
+        })
+        .filter((item) => item.qty > 0),
     )
-  }
+  }, [])
 
-  const removeCartItem = (sku) => {
-    setCart((prev) => prev.filter((item) => item.sku !== sku))
-  }
+  const removeCartItem = useCallback((medicineId) => {
+    setCart((prev) => prev.filter((item) => item.medicineId !== medicineId))
+  }, [])
 
-  const completeSale = () => {
+  const completeSale = useCallback(async () => {
     if (cart.length === 0) {
-      notify('error', 'Add items to the cart before completing a sale.')
+      pushNotice('error', 'Add medicines to complete a sale.')
       return
     }
 
-    for (const cartItem of cart) {
-      const source = inventoryWithStatus.find((item) => item.sku === cartItem.sku)
-      if (!source) {
-        notify('error', `Item ${cartItem.name} no longer exists in inventory.`)
-        return
-      }
-      if (source.status === 'Expired') {
-        notify('error', `${source.name} is expired and cannot be sold.`)
-        return
-      }
-      if (cartItem.qty > source.stock) {
-        notify('error', `Stock is insufficient for ${source.name}.`)
+    for (const row of cart) {
+      if (row.qty > row.stock) {
+        pushNotice('error', `Stock is insufficient for ${row.name}.`)
         return
       }
     }
 
-    const subtotal = roundMoney(cart.reduce((sum, item) => sum + item.qty * item.price, 0))
-    const taxRate = Number(settings.taxRate) / 100
-
-    let tax = 0
-    let total = subtotal
-
-    if (taxRate > 0) {
-      if (settings.pricesIncludeTax) {
-        tax = roundMoney(subtotal - subtotal / (1 + taxRate))
-      } else {
-        tax = roundMoney(subtotal * taxRate)
-        total = roundMoney(subtotal + tax)
-      }
+    const payload = {
+      payment_method: paymentMethod,
+      items: cart.map((row) => ({ medicine_id: row.medicineId, qty: row.qty })),
     }
 
-    const soldMap = cart.reduce((acc, item) => {
-      acc[item.sku] = (acc[item.sku] || 0) + item.qty
-      return acc
-    }, {})
+    const { error } = await supabase.rpc('complete_sale', { payload })
 
-    setInventory((prev) =>
-      prev.map((medicine) => {
-        const qty = soldMap[medicine.sku] || 0
-        if (!qty) {
-          return medicine
-        }
-        return { ...medicine, stock: Math.max(0, medicine.stock - qty) }
-      }),
-    )
-
-    const transaction = {
-      id: `TX-${Date.now().toString().slice(-7)}`,
-      datetime: new Date().toISOString(),
-      items: cart.map((item) => ({ ...item })),
-      itemsCount: cart.reduce((sum, item) => sum + item.qty, 0),
-      subtotal,
-      tax,
-      total,
-      paymentMethod,
+    if (error) {
+      pushNotice('error', error.message)
+      return
     }
 
-    setTransactions((prev) => [transaction, ...prev])
     setCart([])
     setPaymentMethod(PAYMENT_METHODS[0])
-    notify('success', `Sale completed successfully (${formatCurrency(total, settings.currency)}).`)
-  }
+    await Promise.all([loadMedicines(), loadTransactions()])
+    pushNotice('success', 'Sale completed successfully.')
+  }, [cart, loadMedicines, loadTransactions, paymentMethod, pushNotice])
 
-  const addMedicine = (payload) => {
-    if (!canManageInventory) {
-      return { ok: false, message: 'Only admins can add medicines.' }
-    }
-
-    const required = ['sku', 'name', 'category', 'price', 'stock', 'expiryDate']
-    for (const key of required) {
-      if (payload[key] === '' || payload[key] === null || payload[key] === undefined) {
-        return { ok: false, message: 'All medicine fields are required.' }
+  const addMedicine = useCallback(
+    async (payload) => {
+      if (!isAdmin) {
+        return { ok: false, message: 'Only admins can add medicines.' }
       }
+
+      const sku = String(payload.sku || '').trim()
+      const name = String(payload.name || '').trim()
+      const category = String(payload.category || '').trim()
+      const price = Number(payload.price)
+      const stock = Number(payload.stock)
+      const expiry = payload.expiry || null
+
+      if (!sku || !name || !category || !expiry) {
+        return { ok: false, message: 'All fields are required.' }
+      }
+      if (Number.isNaN(price) || price < 0.1) {
+        return { ok: false, message: 'Price must be at least 0.1.' }
+      }
+      if (Number.isNaN(stock) || stock < 0) {
+        return { ok: false, message: 'Stock must be 0 or greater.' }
+      }
+
+      const { error } = await supabase.from('medicines').insert([
+        {
+          sku,
+          name,
+          category,
+          price,
+          stock,
+          expiry,
+        },
+      ])
+
+      if (error) {
+        return { ok: false, message: error.message }
+      }
+
+      await loadMedicines()
+      pushNotice('success', `${name} added to inventory.`)
+      return { ok: true }
+    },
+    [isAdmin, loadMedicines, pushNotice],
+  )
+
+  const editMedicineStock = useCallback(
+    async (id, stock) => {
+      if (!isAdmin) {
+        return { ok: false, message: 'Only admins can edit stock.' }
+      }
+
+      const parsedStock = Number(stock)
+      if (Number.isNaN(parsedStock) || parsedStock < 0) {
+        return { ok: false, message: 'Stock must be 0 or greater.' }
+      }
+
+      const { error } = await supabase.from('medicines').update({ stock: parsedStock }).eq('id', id)
+
+      if (error) {
+        return { ok: false, message: error.message }
+      }
+
+      await loadMedicines()
+      pushNotice('success', 'Stock updated.')
+      return { ok: true }
+    },
+    [isAdmin, loadMedicines, pushNotice],
+  )
+
+  const clearInventory = useCallback(async () => {
+    if (!isAdmin) {
+      return
     }
 
-    if (inventory.some((med) => med.sku.toLowerCase() === String(payload.sku).trim().toLowerCase())) {
-      return { ok: false, message: 'SKU must be unique.' }
+    const confirmed = window.confirm('Delete all medicines from inventory?')
+    if (!confirmed) {
+      return
     }
 
-    const nextMedicine = {
-      sku: String(payload.sku).trim(),
-      name: String(payload.name).trim(),
-      category: String(payload.category).trim(),
-      price: Number(payload.price),
-      stock: Number(payload.stock),
-      expiryDate: payload.expiryDate,
+    const { error } = await supabase
+      .from('medicines')
+      .delete()
+      .gte('created_at', '1900-01-01T00:00:00+00:00')
+
+    if (error) {
+      pushNotice('error', error.message)
+      return
     }
 
-    if (!nextMedicine.sku || !nextMedicine.name || !nextMedicine.category) {
-      return { ok: false, message: 'SKU, name, and category cannot be empty.' }
-    }
-    if (Number.isNaN(nextMedicine.price) || nextMedicine.price < 0) {
-      return { ok: false, message: 'Price must be a valid number.' }
-    }
-    if (Number.isNaN(nextMedicine.stock) || nextMedicine.stock < 0) {
-      return { ok: false, message: 'Stock must be a valid number.' }
-    }
+    setCart([])
+    await loadMedicines()
+    pushNotice('success', 'All medicines deleted from inventory.')
+  }, [isAdmin, loadMedicines, pushNotice])
 
-    setInventory((prev) => [...prev, nextMedicine])
-    notify('success', `${nextMedicine.name} added to inventory.`)
-    return { ok: true }
-  }
+  const saveSettings = useCallback(
+    async (nextSettings) => {
+      if (!isAdmin) {
+        return { ok: false, message: 'Only admins can update settings.' }
+      }
 
-  const editMedicineStock = (sku, stock) => {
-    if (!canManageInventory) {
-      return { ok: false, message: 'Only admins can edit stock.' }
-    }
+      const payload = {
+        store_name: nextSettings.store_name,
+        currency: nextSettings.currency,
+        tax_rate: Number(nextSettings.tax_rate || 0),
+        prices_include_tax: Boolean(nextSettings.prices_include_tax),
+        address: nextSettings.address,
+        phone: nextSettings.phone,
+        support_email: nextSettings.support_email,
+        updated_at: new Date().toISOString(),
+      }
 
-    if (stock === '' || Number(stock) < 0 || Number.isNaN(Number(stock))) {
-      return { ok: false, message: 'Stock must be 0 or greater.' }
-    }
+      if (nextSettings.id) {
+        const { error } = await supabase.from('settings').update(payload).eq('id', nextSettings.id)
+        if (error) {
+          return { ok: false, message: error.message }
+        }
+      } else {
+        const { data, error } = await supabase.from('settings').insert([payload]).select('*').single()
+        if (error) {
+          return { ok: false, message: error.message }
+        }
+        setSettings((prev) => ({ ...prev, id: data.id }))
+      }
 
-    setInventory((prev) =>
-      prev.map((medicine) =>
-        medicine.sku === sku ? { ...medicine, stock: Number(stock) } : medicine,
-      ),
+      await loadSettings()
+      pushNotice('success', 'Settings saved.')
+      return { ok: true }
+    },
+    [isAdmin, loadSettings, pushNotice],
+  )
+
+  const updateStaffRole = useCallback(
+    async (profileId, role) => {
+      if (!isAdmin) {
+        return { ok: false, message: 'Only admins can update staff roles.' }
+      }
+
+      const nextRole = role === 'admin' ? 'admin' : 'staff'
+      const { error } = await supabase.from('profiles').update({ role: nextRole }).eq('id', profileId)
+
+      if (error) {
+        return { ok: false, message: error.message }
+      }
+
+      await loadStaffProfiles()
+      pushNotice('success', 'Staff role updated.')
+      return { ok: true }
+    },
+    [isAdmin, loadStaffProfiles, pushNotice],
+  )
+
+  if (!hasSupabaseEnv) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 p-6">
+        <div className="max-w-xl mx-auto bg-white rounded-2xl border border-slate-200 p-5">
+          <h1 className="text-lg font-semibold">Supabase Environment Missing</h1>
+          <p className="text-sm text-slate-600 mt-2">
+            Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to your env file.
+          </p>
+        </div>
+      </div>
     )
-
-    notify('success', `Stock updated for ${sku}.`)
-    return { ok: true }
   }
 
-  const addStaffUser = (payload) => {
-    if (!canManageStaff) {
-      return { ok: false, message: 'Only admins can create staff accounts.' }
-    }
-
-    const name = String(payload.name || '').trim()
-    const email = normalizeEmail(String(payload.email || ''))
-    const password = String(payload.password || '')
-    const role = payload.role === 'admin' ? 'admin' : 'staff'
-    const active = Boolean(payload.active)
-
-    if (!name || !email || !password) {
-      return { ok: false, message: 'Name, email, and password are required.' }
-    }
-
-    if (password.length < 8) {
-      return { ok: false, message: 'Password must be at least 8 characters.' }
-    }
-
-    if (users.some((user) => normalizeEmail(user.email) === email)) {
-      return { ok: false, message: 'Email must be unique.' }
-    }
-
-    setUsers((prev) => [
-      ...prev,
-      {
-        id: `USR-${Date.now().toString().slice(-6)}`,
-        name,
-        email,
-        password,
-        role,
-        active,
-      },
-    ])
-
-    notify('success', `${name} account created.`)
-    return { ok: true }
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 flex items-center justify-center">
+        <div className="text-sm text-slate-600">Loading authentication...</div>
+      </div>
+    )
   }
 
-  if (!currentUser) {
+  if (!session?.user || !profile) {
     return <LoginScreen onLogin={handleLogin} />
   }
 
-  const pageTitle = PAGE_TITLES[activePage]
+  const userDisplayName = profile.full_name || profile.email || 'User'
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 text-sm">
@@ -620,48 +834,53 @@ function App() {
           type="button"
           className="fixed inset-0 z-30 bg-slate-900/30 md:hidden"
           onClick={() => setSidebarOpen(false)}
-          aria-label="Close sidebar overlay"
+          aria-label="Close sidebar"
         />
       ) : null}
 
       <Sidebar
         activePage={activePage}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
         onNavigate={(page) => {
           setActivePage(page)
           setSidebarOpen(false)
         }}
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
       />
 
       <div className="md:pl-64">
         <HeaderBar
-          title={pageTitle}
-          breadcrumb={['Home', pageTitle]}
+          title={PAGE_TITLES[activePage]}
+          breadcrumb={['Home', PAGE_TITLES[activePage]]}
           searchValue={headerSearch}
           onSearchChange={setHeaderSearch}
           onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-          user={currentUser}
+          user={{ name: userDisplayName, email: profile.email, role: profile.role }}
           onLogout={handleLogout}
         />
 
         <main className="max-w-7xl mx-auto w-full p-4 md:p-6 space-y-4">
-          {flash ? (
+          {notice ? (
             <div
               className={`rounded-xl border px-3 py-2 text-xs ${
-                flash.type === 'success'
+                notice.type === 'success'
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                   : 'border-rose-200 bg-rose-50 text-rose-700'
               }`}
             >
-              {flash.message}
+              {notice.message}
             </div>
+          ) : null}
+
+          {appLoading ? (
+            <Card>
+              <p className="text-sm text-slate-600">Syncing data from Supabase...</p>
+            </Card>
           ) : null}
 
           {activePage === 'dashboard' ? (
             <DashboardPage
               stats={dashboardStats}
-              dailySeries={dailySeries}
               transactions={transactions}
               inventorySignals={inventorySignals}
               currency={settings.currency}
@@ -671,7 +890,7 @@ function App() {
           {activePage === 'pos' ? (
             <POSPage
               medicines={inventoryWithStatus}
-              categories={categories}
+              categories={categoryOptions}
               globalSearch={headerSearch}
               cart={cart}
               paymentMethod={paymentMethod}
@@ -683,38 +902,46 @@ function App() {
               subtotal={cartSubtotal}
               tax={cartTax}
               total={cartTotal}
-              settings={settings}
+              currency={settings.currency}
             />
           ) : null}
 
           {activePage === 'inventory' ? (
             <InventoryPage
               medicines={inventoryWithStatus}
-              categories={categories}
+              categories={categoryOptions}
               globalSearch={headerSearch}
-              canManageInventory={canManageInventory}
+              isAdmin={isAdmin}
               onAddMedicine={addMedicine}
               onEditStock={editMedicineStock}
+              onClearInventory={clearInventory}
               currency={settings.currency}
             />
           ) : null}
 
           {activePage === 'finance' ? (
             <FinancePage
-              dailySeries={dailySeries}
-              paymentBreakdown={paymentBreakdown}
-              transactions={transactions}
+              transactions={filteredFinanceTransactions}
+              series={financeSeries}
+              paymentBreakdown={financePaymentBreakdown}
               currency={settings.currency}
+              range={financeRange}
+              onRangeChange={(key, value) =>
+                setFinanceRange((prev) => ({ ...prev, [key]: value, preset: 'custom' }))
+              }
+              onApplyPreset={setFinancePreset}
             />
           ) : null}
 
           {activePage === 'settings' ? (
             <SettingsPage
               settings={settings}
-              onSettingsChange={setSettings}
-              users={users}
-              currentUser={currentUser}
-              onAddStaff={addStaffUser}
+              setSettings={setSettings}
+              onSaveSettings={saveSettings}
+              isAdmin={isAdmin}
+              profiles={staffProfiles}
+              onRefreshProfiles={loadStaffProfiles}
+              onUpdateStaffRole={updateStaffRole}
             />
           ) : null}
         </main>
@@ -724,37 +951,39 @@ function App() {
 }
 
 function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState('admin@pharmacy.com')
-  const [password, setPassword] = useState('Admin123!')
+  const [email, setEmail] = useState('apdykadir41@gmail.com')
+  const [password, setPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault()
+    setSubmitting(true)
     setError('')
-    const result = onLogin({ email, password })
+
+    const result = await onLogin({ email, password })
     if (!result.ok) {
       setError(result.message)
     }
+
+    setSubmitting(false)
   }
 
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <Card className="w-full max-w-md p-5">
-        <div className="mb-4">
-          <p className="text-xs uppercase tracking-wide text-indigo-600 font-semibold">Pharmacy SaaS</p>
-          <h1 className="text-2xl font-semibold text-slate-900 mt-1">Login</h1>
-          <p className="text-xs text-slate-500 mt-1">Use your account credentials to continue.</p>
-        </div>
+        <p className="text-xs uppercase tracking-wide text-indigo-600 font-semibold">Pharmacy SaaS</p>
+        <h1 className="text-2xl font-semibold text-slate-900 mt-1">Login</h1>
+        <p className="text-xs text-slate-500 mt-1">Sign in with your Supabase email and password.</p>
 
-        <form className="space-y-3" onSubmit={submit}>
+        <form className="space-y-3 mt-4" onSubmit={submit}>
           <Input
             label="Email"
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
-            placeholder="name@pharmacy.com"
+            placeholder="name@domain.com"
           />
-
           <Input
             label="Password"
             type="password"
@@ -765,22 +994,16 @@ function LoginScreen({ onLogin }) {
 
           {error ? <p className="text-xs text-rose-600">{error}</p> : null}
 
-          <Button type="submit" className="w-full" icon={Shield}>
-            Sign In
+          <Button type="submit" className="w-full" icon={Shield} disabled={submitting}>
+            {submitting ? 'Signing In...' : 'Sign In'}
           </Button>
         </form>
-
-        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-          <p className="font-medium text-slate-700">Seed Admin</p>
-          <p>Email: admin@pharmacy.com</p>
-          <p>Password: Admin123!</p>
-        </div>
       </Card>
     </div>
   )
 }
 
-function Sidebar({ activePage, onNavigate, isOpen, onClose }) {
+function Sidebar({ activePage, isOpen, onClose, onNavigate }) {
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-40 w-64 bg-white/60 backdrop-blur-md border-r border-slate-200 transition-transform duration-200 md:translate-x-0 ${
@@ -806,11 +1029,10 @@ function Sidebar({ activePage, onNavigate, isOpen, onClose }) {
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon
           const active = activePage === item.id
-
           return (
             <button
-              type="button"
               key={item.id}
+              type="button"
               onClick={() => onNavigate(item.id)}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition ${
                 active
@@ -848,7 +1070,7 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
             <h1 className="text-lg font-semibold text-slate-900 truncate">{title}</h1>
             <div className="hidden sm:flex items-center gap-1 text-xs text-slate-500">
               {breadcrumb.map((item, index) => (
-                <div className="flex items-center gap-1" key={item + index}>
+                <div className="flex items-center gap-1" key={`${item}-${index}`}>
                   {index > 0 ? <ChevronRight size={12} /> : null}
                   <span>{item}</span>
                 </div>
@@ -864,7 +1086,7 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
               value={searchValue}
               onChange={(event) => onSearchChange(event.target.value)}
               className="w-full bg-transparent outline-none text-sm placeholder:text-slate-400"
-              placeholder="Search medicines, transactions..."
+              placeholder="Search medicines, sku, categories..."
             />
           </div>
 
@@ -890,13 +1112,13 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
                 {getInitials(user.name)}
               </span>
               <span className="hidden sm:block text-xs text-left leading-tight">
-                <span className="block text-slate-800 font-medium">{user.name}</span>
+                <span className="block text-slate-800 font-medium truncate max-w-[160px]">{user.name}</span>
                 <span className="block text-slate-500 capitalize">{user.role}</span>
               </span>
             </button>
 
             {menuOpen ? (
-              <div className="absolute right-0 mt-2 w-48 rounded-xl border border-slate-200 bg-white shadow-sm p-2">
+              <div className="absolute right-0 mt-2 w-56 rounded-xl border border-slate-200 bg-white shadow-sm p-2">
                 <div className="px-2 py-1.5 border-b border-slate-100 mb-1">
                   <p className="text-xs font-medium text-slate-800 truncate">{user.email}</p>
                   <p className="text-xs text-slate-500 capitalize">Role: {user.role}</p>
@@ -906,7 +1128,7 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
                   className="w-full text-left px-2 py-1.5 text-xs rounded-lg hover:bg-slate-100 text-slate-700 inline-flex items-center gap-1.5"
                   onClick={() => {
                     setMenuOpen(false)
-                    onLogout()
+                    void onLogout()
                   }}
                 >
                   <LogOut size={14} />
@@ -921,39 +1143,24 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
   )
 }
 
-function DashboardPage({ stats, dailySeries, transactions, inventorySignals, currency }) {
-  const revenueTrend = dailySeries.map((item) => item.total)
-  const transactionsTrend = dailySeries.map((item) => item.count)
-  const stockTrend = dailySeries.map((_, index) => Math.max(1, stats.stockValue * (0.9 + index * 0.015)))
-  const lowStockTrend = dailySeries.map((_, index) => Math.max(0, stats.lowStockCount + (index % 2 === 0 ? 1 : 0)))
+function DashboardPage({ stats, transactions, inventorySignals, currency }) {
+  const sparkRevenue = transactions.slice(0, 7).map((row) => row.total).reverse()
+  const sparkTx = transactions.slice(0, 7).map((row) => row.itemsCount || 1).reverse()
+  const sparkStock = [0.95, 1, 1.05, 1.02, 1, 1.01, 0.99].map((factor) => stats.stockValue * factor)
+  const sparkLow = [stats.lowStock + 1, stats.lowStock, stats.lowStock + 1, stats.lowStock, stats.lowStock]
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard
-          label="Revenue"
-          value={formatCurrency(stats.revenue, currency)}
-          icon={DollarSign}
-          trend={revenueTrend}
-        />
+        <StatCard label="Revenue" value={formatCurrency(stats.revenue, currency)} icon={DollarSign} trend={sparkRevenue} />
         <StatCard
           label="Transactions"
           value={String(stats.transactionsCount)}
           icon={Receipt}
-          trend={transactionsTrend}
+          trend={sparkTx}
         />
-        <StatCard
-          label="Stock Value"
-          value={formatCurrency(stats.stockValue, currency)}
-          icon={Package}
-          trend={stockTrend}
-        />
-        <StatCard
-          label="Low Stock"
-          value={String(stats.lowStockCount)}
-          icon={AlertTriangle}
-          trend={lowStockTrend}
-        />
+        <StatCard label="Stock Value" value={formatCurrency(stats.stockValue, currency)} icon={Package} trend={sparkStock} />
+        <StatCard label="Low Stock" value={String(stats.lowStock)} icon={AlertTriangle} trend={sparkLow} />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -969,10 +1176,10 @@ function DashboardPage({ stats, dailySeries, transactions, inventorySignals, cur
           >
             {transactions.slice(0, 8).map((tx) => (
               <tr key={tx.id} className="border-t border-slate-100">
-                <td className="px-3 py-2 text-xs font-medium text-slate-800">{tx.id}</td>
-                <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(tx.datetime)}</td>
+                <td className="px-3 py-2 text-xs font-medium text-slate-800">{tx.id.slice(0, 8)}</td>
+                <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(tx.createdAt)}</td>
                 <td className="px-3 py-2 text-xs text-right text-slate-700">{tx.itemsCount}</td>
-                <td className="px-3 py-2 text-xs text-slate-700">{tx.paymentMethod}</td>
+                <td className="px-3 py-2 text-xs text-slate-700 capitalize">{tx.paymentMethod}</td>
                 <td className="px-3 py-2 text-xs text-right font-medium text-slate-900">
                   {formatCurrency(tx.total, currency)}
                 </td>
@@ -1006,7 +1213,7 @@ function POSPage({
   subtotal,
   tax,
   total,
-  settings,
+  currency,
 }) {
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
@@ -1018,9 +1225,11 @@ function POSPage({
       if (!categoryOk) {
         return false
       }
+
       if (!query) {
         return true
       }
+
       return (
         medicine.name.toLowerCase().includes(query) ||
         medicine.sku.toLowerCase().includes(query) ||
@@ -1059,12 +1268,12 @@ function POSPage({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {filteredMedicines.map((medicine) => {
-            const inCartQty = cart.find((item) => item.sku === medicine.sku)?.qty || 0
+            const inCartQty = cart.find((item) => item.medicineId === medicine.id)?.qty || 0
             const available = Math.max(0, medicine.stock - inCartQty)
             const disabled = medicine.status === 'Expired' || available <= 0
 
             return (
-              <div key={medicine.sku} className="rounded-xl border border-slate-100 bg-white p-3">
+              <div key={medicine.id} className="rounded-xl border border-slate-100 bg-white p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="text-xs text-slate-500">{medicine.sku}</p>
@@ -1075,9 +1284,7 @@ function POSPage({
                 </div>
                 <div className="mt-2 flex items-center justify-between text-xs">
                   <span className="text-slate-500">Stock: {medicine.stock}</span>
-                  <span className="font-semibold text-slate-800">
-                    {formatCurrency(medicine.price, settings.currency)}
-                  </span>
+                  <span className="font-semibold text-slate-800">{formatCurrency(medicine.price, currency)}</span>
                 </div>
                 <Button
                   className="w-full mt-3"
@@ -1102,28 +1309,28 @@ function POSPage({
             </div>
           ) : (
             cart.map((item) => (
-              <div key={item.sku} className="rounded-xl border border-slate-100 bg-white p-2.5">
+              <div key={item.medicineId} className="rounded-xl border border-slate-100 bg-white p-2.5">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="text-sm font-medium text-slate-900">{item.name}</p>
-                    <p className="text-xs text-slate-500">{formatCurrency(item.price, settings.currency)} each</p>
+                    <p className="text-xs text-slate-500">{formatCurrency(item.price, currency)} each</p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => onRemoveItem(item.sku)}
+                    onClick={() => onRemoveItem(item.medicineId)}
                     className="p-1 text-slate-400 hover:text-rose-500"
                     aria-label={`Remove ${item.name}`}
                   >
                     <Trash2 size={14} />
                   </button>
                 </div>
+
                 <div className="mt-2 flex items-center justify-between">
                   <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50">
                     <button
                       type="button"
                       className="p-1.5 text-slate-600 hover:bg-slate-100"
-                      onClick={() => onUpdateQty(item.sku, item.qty - 1)}
-                      aria-label="Decrease quantity"
+                      onClick={() => onUpdateQty(item.medicineId, item.qty - 1)}
                     >
                       <Minus size={13} />
                     </button>
@@ -1131,14 +1338,14 @@ function POSPage({
                     <button
                       type="button"
                       className="p-1.5 text-slate-600 hover:bg-slate-100"
-                      onClick={() => onUpdateQty(item.sku, item.qty + 1)}
-                      aria-label="Increase quantity"
+                      onClick={() => onUpdateQty(item.medicineId, item.qty + 1)}
                     >
                       <Plus size={13} />
                     </button>
                   </div>
+
                   <p className="text-xs font-semibold text-slate-800">
-                    {formatCurrency(item.qty * item.price, settings.currency)}
+                    {formatCurrency(item.qty * item.price, currency)}
                   </p>
                 </div>
               </div>
@@ -1151,10 +1358,10 @@ function POSPage({
           <div className="grid grid-cols-3 gap-2">
             {PAYMENT_METHODS.map((method) => (
               <button
-                type="button"
                 key={method}
+                type="button"
                 onClick={() => onPaymentMethodChange(method)}
-                className={`h-8 rounded-lg text-xs border ${
+                className={`h-8 rounded-lg text-xs border capitalize ${
                   paymentMethod === method
                     ? 'bg-indigo-600 border-indigo-600 text-white'
                     : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
@@ -1169,19 +1376,19 @@ function POSPage({
         <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3 space-y-1.5 text-xs">
           <div className="flex items-center justify-between text-slate-600">
             <span>Subtotal</span>
-            <span>{formatCurrency(subtotal, settings.currency)}</span>
+            <span>{formatCurrency(subtotal, currency)}</span>
           </div>
           <div className="flex items-center justify-between text-slate-600">
-            <span>Tax ({Number(settings.taxRate).toFixed(1)}%)</span>
-            <span>{formatCurrency(tax, settings.currency)}</span>
+            <span>Tax</span>
+            <span>{formatCurrency(tax, currency)}</span>
           </div>
           <div className="flex items-center justify-between border-t border-slate-200 pt-1.5 text-sm font-semibold text-slate-900">
             <span>Total</span>
-            <span>{formatCurrency(total, settings.currency)}</span>
+            <span>{formatCurrency(total, currency)}</span>
           </div>
         </div>
 
-        <Button className="w-full mt-3" onClick={onCompleteSale} icon={CreditCard}>
+        <Button className="w-full mt-3" onClick={() => void onCompleteSale()} icon={CreditCard}>
           Complete Sale
         </Button>
       </Card>
@@ -1193,9 +1400,10 @@ function InventoryPage({
   medicines,
   categories,
   globalSearch,
-  canManageInventory,
+  isAdmin,
   onAddMedicine,
   onEditStock,
+  onClearInventory,
   currency,
 }) {
   const [category, setCategory] = useState('All')
@@ -1209,12 +1417,12 @@ function InventoryPage({
     category: '',
     price: '',
     stock: '',
-    expiryDate: '',
+    expiry: '',
   })
   const [addError, setAddError] = useState('')
 
-  const [editStockValue, setEditStockValue] = useState('')
-  const [editStockError, setEditStockError] = useState('')
+  const [stockValue, setStockValue] = useState('')
+  const [stockError, setStockError] = useState('')
 
   const filtered = useMemo(() => {
     const query = globalSearch.trim().toLowerCase()
@@ -1223,9 +1431,11 @@ function InventoryPage({
       if (!categoryOk) {
         return false
       }
+
       if (!query) {
         return true
       }
+
       return (
         medicine.name.toLowerCase().includes(query) ||
         medicine.sku.toLowerCase().includes(query) ||
@@ -1234,54 +1444,44 @@ function InventoryPage({
     })
   }, [medicines, category, globalSearch])
 
-  const submitAddMedicine = (event) => {
+  const submitAddMedicine = async (event) => {
     event.preventDefault()
     setAddError('')
-    const result = onAddMedicine(addForm)
+
+    const result = await onAddMedicine(addForm)
     if (!result.ok) {
       setAddError(result.message)
       return
     }
 
-    setAddForm({
-      sku: '',
-      name: '',
-      category: '',
-      price: '',
-      stock: '',
-      expiryDate: '',
-    })
+    setAddForm({ sku: '', name: '', category: '', price: '', stock: '', expiry: '' })
     setShowAddModal(false)
   }
 
-  const openStockEditor = (medicine) => {
-    setSelectedMedicine(medicine)
-    setEditStockValue(String(medicine.stock))
-    setEditStockError('')
-    setShowStockModal(true)
-  }
-
-  const submitStockEdit = (event) => {
+  const submitStockUpdate = async (event) => {
     event.preventDefault()
+    setStockError('')
+
     if (!selectedMedicine) {
       return
     }
-    const result = onEditStock(selectedMedicine.sku, editStockValue)
+
+    const result = await onEditStock(selectedMedicine.id, stockValue)
     if (!result.ok) {
-      setEditStockError(result.message)
+      setStockError(result.message)
       return
     }
 
     setShowStockModal(false)
     setSelectedMedicine(null)
-    setEditStockValue('')
+    setStockValue('')
   }
 
   return (
     <div className="space-y-4">
       <Card
         title="Inventory"
-        subtitle="Single source of truth for POS"
+        subtitle="Supabase-backed medicines"
         action={
           <div className="flex items-center gap-2">
             <select
@@ -1295,10 +1495,16 @@ function InventoryPage({
                 </option>
               ))}
             </select>
-            {canManageInventory ? (
-              <Button size="sm" onClick={() => setShowAddModal(true)} icon={Plus}>
-                Add Medicine
-              </Button>
+
+            {isAdmin ? (
+              <>
+                <Button size="sm" variant="secondary" onClick={() => void onClearInventory()} icon={Trash2}>
+                  Clear All
+                </Button>
+                <Button size="sm" onClick={() => setShowAddModal(true)} icon={Plus}>
+                  Add Medicine
+                </Button>
+              </>
             ) : null}
           </div>
         }
@@ -1312,11 +1518,11 @@ function InventoryPage({
             { label: 'Stock', className: 'text-right' },
             { label: 'Expiry' },
             { label: 'Status' },
-            ...(canManageInventory ? [{ label: 'Action', className: 'text-right' }] : []),
+            ...(isAdmin ? [{ label: 'Action', className: 'text-right' }] : []),
           ]}
         >
           {filtered.map((medicine) => (
-            <tr key={medicine.sku} className="border-t border-slate-100">
+            <tr key={medicine.id} className="border-t border-slate-100">
               <td className="px-3 py-2 text-xs font-medium text-slate-800">{medicine.sku}</td>
               <td className="px-3 py-2 text-xs text-slate-800">{medicine.name}</td>
               <td className="px-3 py-2 text-xs text-slate-600">{medicine.category}</td>
@@ -1324,17 +1530,22 @@ function InventoryPage({
                 {formatCurrency(medicine.price, currency)}
               </td>
               <td className="px-3 py-2 text-xs text-right font-medium text-slate-800">{medicine.stock}</td>
-              <td className="px-3 py-2 text-xs text-slate-600">{medicine.expiryDate}</td>
+              <td className="px-3 py-2 text-xs text-slate-600">{medicine.expiry || '-'}</td>
               <td className="px-3 py-2 text-xs">
                 <Badge tone={statusTone(medicine.status)}>{medicine.status}</Badge>
               </td>
-              {canManageInventory ? (
+              {isAdmin ? (
                 <td className="px-3 py-2 text-xs text-right">
                   <Button
                     variant="secondary"
                     size="sm"
                     icon={Edit3}
-                    onClick={() => openStockEditor(medicine)}
+                    onClick={() => {
+                      setSelectedMedicine(medicine)
+                      setStockValue(String(medicine.stock))
+                      setStockError('')
+                      setShowStockModal(true)
+                    }}
                   >
                     Edit Stock
                   </Button>
@@ -1349,36 +1560,32 @@ function InventoryPage({
         open={showAddModal}
         onClose={() => setShowAddModal(false)}
         title="Add Medicine"
-        description="Create a medicine record for inventory and POS."
+        description="Retail medicine price must be at least 0.1."
       >
-        <form className="space-y-3" onSubmit={submitAddMedicine}>
+        <form className="space-y-3" onSubmit={(event) => void submitAddMedicine(event)}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="SKU"
               value={addForm.sku}
               onChange={(event) => setAddForm((prev) => ({ ...prev, sku: event.target.value }))}
-              placeholder="MED-1011"
             />
             <Input
               label="Name"
               value={addForm.name}
               onChange={(event) => setAddForm((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="Medicine name"
             />
             <Input
               label="Category"
               value={addForm.category}
               onChange={(event) => setAddForm((prev) => ({ ...prev, category: event.target.value }))}
-              placeholder="Category"
             />
             <Input
               label="Price"
               type="number"
-              min="0"
+              min="0.1"
               step="0.01"
               value={addForm.price}
               onChange={(event) => setAddForm((prev) => ({ ...prev, price: event.target.value }))}
-              placeholder="0.00"
             />
             <Input
               label="Stock"
@@ -1386,20 +1593,19 @@ function InventoryPage({
               min="0"
               value={addForm.stock}
               onChange={(event) => setAddForm((prev) => ({ ...prev, stock: event.target.value }))}
-              placeholder="0"
             />
             <Input
-              label="Expiry Date"
+              label="Expiry"
               type="date"
-              value={addForm.expiryDate}
-              onChange={(event) => setAddForm((prev) => ({ ...prev, expiryDate: event.target.value }))}
+              value={addForm.expiry}
+              onChange={(event) => setAddForm((prev) => ({ ...prev, expiry: event.target.value }))}
             />
           </div>
 
           {addError ? <p className="text-xs text-rose-600">{addError}</p> : null}
 
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" type="button" onClick={() => setShowAddModal(false)}>
+            <Button type="button" variant="secondary" onClick={() => setShowAddModal(false)}>
               Cancel
             </Button>
             <Button type="submit">Add Medicine</Button>
@@ -1413,19 +1619,19 @@ function InventoryPage({
         title="Edit Stock"
         description={selectedMedicine ? `${selectedMedicine.name} (${selectedMedicine.sku})` : ''}
       >
-        <form className="space-y-3" onSubmit={submitStockEdit}>
+        <form className="space-y-3" onSubmit={(event) => void submitStockUpdate(event)}>
           <Input
             label="Stock Quantity"
             type="number"
             min="0"
-            value={editStockValue}
-            onChange={(event) => setEditStockValue(event.target.value)}
+            value={stockValue}
+            onChange={(event) => setStockValue(event.target.value)}
           />
 
-          {editStockError ? <p className="text-xs text-rose-600">{editStockError}</p> : null}
+          {stockError ? <p className="text-xs text-rose-600">{stockError}</p> : null}
 
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" type="button" onClick={() => setShowStockModal(false)}>
+            <Button type="button" variant="secondary" onClick={() => setShowStockModal(false)}>
               Cancel
             </Button>
             <Button type="submit">Update Stock</Button>
@@ -1436,41 +1642,89 @@ function InventoryPage({
   )
 }
 
-function FinancePage({ dailySeries, paymentBreakdown, transactions, currency }) {
-  const maxDaily = Math.max(...dailySeries.map((item) => item.total), 1)
-  const paymentTotal = paymentBreakdown.reduce((sum, item) => sum + item.total, 0)
+function FinancePage({
+  transactions,
+  series,
+  paymentBreakdown,
+  currency,
+  range,
+  onRangeChange,
+  onApplyPreset,
+}) {
+  const maxDaily = Math.max(...series.map((item) => item.total), 1)
+  const paymentTotal = paymentBreakdown.reduce((sum, row) => sum + row.total, 0)
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <Card className="xl:col-span-2" title="Daily Earnings" subtitle="Last 7 days">
-        <div className="h-44 flex items-end gap-2">
-          {dailySeries.map((item) => {
+      <Card
+        className="xl:col-span-3"
+        title="Finance Filters"
+        subtitle="Use custom date range or quick presets"
+        action={
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={range.preset === '30' ? 'primary' : 'secondary'}
+              onClick={() => onApplyPreset(30)}
+            >
+              30 Days
+            </Button>
+            <Button
+              size="sm"
+              variant={range.preset === '90' ? 'primary' : 'secondary'}
+              onClick={() => onApplyPreset(90)}
+            >
+              90 Days
+            </Button>
+          </div>
+        }
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <Input
+            label="From"
+            type="date"
+            value={range.from}
+            onChange={(event) => onRangeChange('from', event.target.value)}
+          />
+          <Input
+            label="To"
+            type="date"
+            value={range.to}
+            onChange={(event) => onRangeChange('to', event.target.value)}
+          />
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <p className="text-xs text-slate-500">Transactions in range</p>
+            <p className="text-lg font-semibold text-slate-900 mt-1">{transactions.length}</p>
+          </div>
+        </div>
+      </Card>
+
+      <Card className="xl:col-span-2" title="Daily Earnings" subtitle="Bar sparkline based on selected range">
+        <div className="h-44 flex items-end gap-1.5 overflow-x-auto">
+          {series.map((item) => {
             const height = Math.max(8, Math.round((item.total / maxDaily) * 120))
             return (
-              <div key={item.key} className="flex-1 flex flex-col items-center gap-1">
-                <div className="w-full max-w-[42px] rounded-t-md bg-indigo-100 relative" style={{ height }}>
+              <div key={item.key} className="min-w-[40px] flex flex-col items-center gap-1">
+                <div className="w-full rounded-t-md bg-indigo-100 relative" style={{ height }}>
                   <div className="absolute inset-x-0 bottom-0 rounded-t-md bg-indigo-600" style={{ height }} />
                 </div>
                 <p className="text-[10px] text-slate-500 leading-none">{item.label}</p>
-                <p className="text-[10px] text-slate-700 font-medium leading-none">
-                  {formatCurrency(item.total, currency)}
-                </p>
               </div>
             )
           })}
         </div>
       </Card>
 
-      <Card title="Payment Breakdown" subtitle="By method">
+      <Card title="Payment Breakdown" subtitle="% and totals in selected range">
         <div className="space-y-3">
-          {paymentBreakdown.map((item) => {
-            const percent = paymentTotal > 0 ? (item.total / paymentTotal) * 100 : 0
+          {paymentBreakdown.map((row) => {
+            const percent = paymentTotal > 0 ? (row.total / paymentTotal) * 100 : 0
             return (
-              <div key={item.method}>
+              <div key={row.method}>
                 <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="text-slate-700 font-medium">{item.method}</span>
+                  <span className="text-slate-700 font-medium capitalize">{row.method}</span>
                   <span className="text-slate-500">
-                    {percent.toFixed(1)}% ({formatCurrency(item.total, currency)})
+                    {percent.toFixed(1)}% ({formatCurrency(row.total, currency)})
                   </span>
                 </div>
                 <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
@@ -1481,59 +1735,30 @@ function FinancePage({ dailySeries, paymentBreakdown, transactions, currency }) 
           })}
         </div>
       </Card>
-
-      <Card className="xl:col-span-3" title="Finance Summary" subtitle="Transactions and totals">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">Transactions</p>
-            <p className="text-lg font-semibold text-slate-900 mt-1">{transactions.length}</p>
-          </div>
-          <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">Revenue</p>
-            <p className="text-lg font-semibold text-slate-900 mt-1">
-              {formatCurrency(transactions.reduce((sum, tx) => sum + tx.total, 0), currency)}
-            </p>
-          </div>
-          <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">Tax Collected</p>
-            <p className="text-lg font-semibold text-slate-900 mt-1">
-              {formatCurrency(transactions.reduce((sum, tx) => sum + tx.tax, 0), currency)}
-            </p>
-          </div>
-        </div>
-      </Card>
     </div>
   )
 }
 
-function SettingsPage({ settings, onSettingsChange, users, currentUser, onAddStaff }) {
-  const [showStaffModal, setShowStaffModal] = useState(false)
-  const [staffForm, setStaffForm] = useState({
-    name: '',
-    email: '',
-    password: '',
-    role: 'staff',
-    active: true,
-  })
-  const [staffError, setStaffError] = useState('')
+function SettingsPage({
+  settings,
+  setSettings,
+  onSaveSettings,
+  isAdmin,
+  profiles,
+  onRefreshProfiles,
+  onUpdateStaffRole,
+}) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
-  const isAdmin = currentUser.role === 'admin'
-
-  const updateField = (key, value) => {
-    onSettingsChange((prev) => ({ ...prev, [key]: value }))
-  }
-
-  const submitStaff = (event) => {
-    event.preventDefault()
-    setStaffError('')
-    const result = onAddStaff(staffForm)
+  const save = async () => {
+    setSaving(true)
+    setError('')
+    const result = await onSaveSettings(settings)
     if (!result.ok) {
-      setStaffError(result.message)
-      return
+      setError(result.message)
     }
-
-    setStaffForm({ name: '', email: '', password: '', role: 'staff', active: true })
-    setShowStaffModal(false)
+    setSaving(false)
   }
 
   return (
@@ -1542,15 +1767,16 @@ function SettingsPage({ settings, onSettingsChange, users, currentUser, onAddSta
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             label="Store Name"
-            value={settings.storeName}
-            onChange={(event) => updateField('storeName', event.target.value)}
+            value={settings.store_name}
+            onChange={(event) => setSettings((prev) => ({ ...prev, store_name: event.target.value }))}
           />
+
           <label className="space-y-1 block">
             <span className="text-xs font-medium text-slate-600">Currency</span>
             <select
               className="w-full h-9 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none"
               value={settings.currency}
-              onChange={(event) => updateField('currency', event.target.value)}
+              onChange={(event) => setSettings((prev) => ({ ...prev, currency: event.target.value }))}
             >
               <option value="USD">USD</option>
               <option value="EUR">EUR</option>
@@ -1560,58 +1786,51 @@ function SettingsPage({ settings, onSettingsChange, users, currentUser, onAddSta
         </div>
       </Card>
 
-      <Card title="Taxation" subtitle="Applied in POS checkout">
-        <div className="space-y-3">
-          <Input
-            label="Tax Rate (%)"
-            type="number"
-            min="0"
-            step="0.1"
-            value={settings.taxRate}
-            onChange={(event) => updateField('taxRate', Number(event.target.value || 0))}
-          />
-
-          <label className="h-9 rounded-xl border border-slate-200 bg-white px-3 flex items-center justify-between">
-            <span className="text-xs text-slate-700">Prices include tax</span>
-            <input
-              type="checkbox"
-              checked={settings.pricesIncludeTax}
-              onChange={(event) => updateField('pricesIncludeTax', event.target.checked)}
-              className="h-4 w-4"
-            />
-          </label>
-        </div>
-      </Card>
-
-      <Card title="Store Identity" subtitle="Displayed on receipts and contact channels" className="xl:col-span-2">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <Card title="Store Identity" subtitle="Displayed on receipts and support details">
+        <div className="grid grid-cols-1 gap-3">
           <Input
             label="Address"
             value={settings.address}
-            onChange={(event) => updateField('address', event.target.value)}
+            onChange={(event) => setSettings((prev) => ({ ...prev, address: event.target.value }))}
           />
           <Input
             label="Phone"
             value={settings.phone}
-            onChange={(event) => updateField('phone', event.target.value)}
+            onChange={(event) => setSettings((prev) => ({ ...prev, phone: event.target.value }))}
           />
           <Input
             label="Support Email"
             type="email"
-            value={settings.supportEmail}
-            onChange={(event) => updateField('supportEmail', event.target.value)}
+            value={settings.support_email}
+            onChange={(event) =>
+              setSettings((prev) => ({ ...prev, support_email: event.target.value }))
+            }
           />
         </div>
       </Card>
 
+      <Card
+        className="xl:col-span-2"
+        title="Settings Save"
+        subtitle="Taxation section removed from UI as requested"
+      >
+        {error ? <p className="text-xs text-rose-600 mb-2">{error}</p> : null}
+        <Button onClick={() => void save()} disabled={!isAdmin || saving} icon={Settings}>
+          {saving ? 'Saving...' : 'Save Settings'}
+        </Button>
+        {!isAdmin ? (
+          <p className="text-xs text-slate-500 mt-2">Only admins can update settings.</p>
+        ) : null}
+      </Card>
+
       {isAdmin ? (
         <Card
-          title="Staff Management"
-          subtitle="Create and manage staff accounts"
           className="xl:col-span-2"
+          title="Staff Management"
+          subtitle="Manage profile roles (users must exist in Supabase Auth)"
           action={
-            <Button size="sm" onClick={() => setShowStaffModal(true)} icon={Users}>
-              Add Staff
+            <Button size="sm" variant="secondary" icon={RefreshCcw} onClick={() => void onRefreshProfiles()}>
+              Refresh
             </Button>
           }
         >
@@ -1620,21 +1839,24 @@ function SettingsPage({ settings, onSettingsChange, users, currentUser, onAddSta
               { label: 'Name' },
               { label: 'Email' },
               { label: 'Role' },
-              { label: 'Status' },
+              { label: 'Created' },
             ]}
           >
-            {users.map((user) => (
-              <tr key={user.id} className="border-t border-slate-100">
-                <td className="px-3 py-2 text-xs font-medium text-slate-800">{user.name}</td>
-                <td className="px-3 py-2 text-xs text-slate-600">{user.email}</td>
+            {profiles.map((row) => (
+              <tr key={row.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 text-xs text-slate-800">{row.full_name || 'User'}</td>
+                <td className="px-3 py-2 text-xs text-slate-600">{row.email}</td>
                 <td className="px-3 py-2 text-xs">
-                  <Badge tone={user.role === 'admin' ? 'indigo' : 'slate'}>{user.role}</Badge>
+                  <select
+                    className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs outline-none"
+                    value={row.role}
+                    onChange={(event) => void onUpdateStaffRole(row.id, event.target.value)}
+                  >
+                    <option value="staff">staff</option>
+                    <option value="admin">admin</option>
+                  </select>
                 </td>
-                <td className="px-3 py-2 text-xs">
-                  <Badge tone={user.active ? 'emerald' : 'rose'}>
-                    {user.active ? 'Active' : 'Inactive'}
-                  </Badge>
-                </td>
+                <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(row.created_at)}</td>
               </tr>
             ))}
           </Table>
@@ -1642,69 +1864,10 @@ function SettingsPage({ settings, onSettingsChange, users, currentUser, onAddSta
       ) : (
         <Card className="xl:col-span-2" title="Staff Management" subtitle="Admin only section">
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            Staff accounts can be created only by admins.
+            Staff management is only available for admins.
           </div>
         </Card>
       )}
-
-      <Modal
-        open={showStaffModal}
-        onClose={() => setShowStaffModal(false)}
-        title="Add Staff Account"
-        description="New users can login immediately after creation."
-      >
-        <form className="space-y-3" onSubmit={submitStaff}>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Name"
-              value={staffForm.name}
-              onChange={(event) => setStaffForm((prev) => ({ ...prev, name: event.target.value }))}
-            />
-            <Input
-              label="Email"
-              type="email"
-              value={staffForm.email}
-              onChange={(event) => setStaffForm((prev) => ({ ...prev, email: event.target.value }))}
-            />
-            <Input
-              label="Password"
-              type="password"
-              value={staffForm.password}
-              onChange={(event) => setStaffForm((prev) => ({ ...prev, password: event.target.value }))}
-            />
-            <label className="space-y-1 block">
-              <span className="text-xs font-medium text-slate-600">Role</span>
-              <select
-                className="w-full h-9 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none"
-                value={staffForm.role}
-                onChange={(event) => setStaffForm((prev) => ({ ...prev, role: event.target.value }))}
-              >
-                <option value="staff">staff</option>
-                <option value="admin">admin</option>
-              </select>
-            </label>
-          </div>
-
-          <label className="h-9 rounded-xl border border-slate-200 bg-white px-3 flex items-center justify-between">
-            <span className="text-xs text-slate-700">Active account</span>
-            <input
-              type="checkbox"
-              checked={staffForm.active}
-              onChange={(event) => setStaffForm((prev) => ({ ...prev, active: event.target.checked }))}
-              className="h-4 w-4"
-            />
-          </label>
-
-          {staffError ? <p className="text-xs text-rose-600">{staffError}</p> : null}
-
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" type="button" onClick={() => setShowStaffModal(false)}>
-              Cancel
-            </Button>
-            <Button type="submit">Create Staff</Button>
-          </div>
-        </form>
-      </Modal>
     </div>
   )
 }
@@ -1730,6 +1893,7 @@ function StatCard({ label, value, icon, trend }) {
 
 function SparkBars({ values }) {
   const max = Math.max(...values, 1)
+
   return (
     <div className="mt-3 h-10 flex items-end gap-1">
       {values.map((value, index) => {
@@ -1886,16 +2050,6 @@ function Table({ columns, children }) {
       </table>
     </div>
   )
-}
-
-function statusTone(status) {
-  if (status === 'Expired') {
-    return 'rose'
-  }
-  if (status === 'Low Stock') {
-    return 'amber'
-  }
-  return 'emerald'
 }
 
 export default App
