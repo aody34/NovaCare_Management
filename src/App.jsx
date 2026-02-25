@@ -59,7 +59,7 @@ const DEFAULT_STAFF_PERMISSIONS = {
   pos: true,
   inventory: true,
   finance: true,
-  settings: false,
+  settings: true,
 }
 
 const FULL_PAGE_PERMISSIONS = {
@@ -69,9 +69,6 @@ const FULL_PAGE_PERMISSIONS = {
   finance: true,
   settings: true,
 }
-
-const PERMISSION_BACKEND_NONE_MESSAGE =
-  'Permissions storage is not configured. Run the staff_permissions migration or add profiles.permissions jsonb.'
 
 const DEFAULT_SETTINGS = {
   id: null,
@@ -277,8 +274,7 @@ function App() {
   })
 
   const [notice, setNotice] = useState(null)
-  const [permissionBackend, setPermissionBackend] = useState(null)
-  const [userPermissions, setUserPermissions] = useState(() => ({ ...DEFAULT_STAFF_PERMISSIONS }))
+  const [userPermissions, setUserPermissions] = useState(() => ({ ...FULL_PAGE_PERMISSIONS }))
 
   const pushNotice = useCallback((type, message) => {
     setNotice({ type, message })
@@ -286,39 +282,50 @@ function App() {
     pushNotice.timer = window.setTimeout(() => setNotice(null), 3200)
   }, [])
 
-  const resolvePermissionBackend = useCallback(async () => {
-    if (permissionBackend) {
-      return permissionBackend
+  const fetchSingleStaffPermissions = useCallback(async (userId, { seedIfMissing = false, context = '' } = {}) => {
+    if (!userId) {
+      return { ok: false, message: 'Invalid staff account.' }
     }
 
-    const { error } = await supabase.from('staff_permissions').select('user_id').limit(1)
-    if (!error) {
-      setPermissionBackend('staff_permissions')
-      return 'staff_permissions'
+    const { data, error } = await supabase
+      .from('staff_permissions')
+      .select('dashboard,pos,inventory,finance,settings')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (error) {
+      return { ok: false, message: error.message }
     }
 
-    if (error?.code === '42501') {
-      setPermissionBackend('staff_permissions')
-      return 'staff_permissions'
-    }
-
-    if (error?.code === '42P01' || /staff_permissions.+does not exist/i.test(error?.message || '')) {
-      const { error: profilePermissionsError } = await supabase.from('profiles').select('permissions').limit(1)
-      if (!profilePermissionsError || profilePermissionsError?.code === '42501') {
-        setPermissionBackend('profiles_permissions')
-        return 'profiles_permissions'
+    if (data) {
+      const permissions = normalizePermissions(data, 'staff')
+      if (context) {
+        console.log('[staff-permissions] loaded', { context, userId, permissions })
       }
-      if (profilePermissionsError?.code === '42703') {
-        setPermissionBackend('none')
-        return 'none'
-      }
-      setPermissionBackend('none')
-      return 'none'
+      return { ok: true, permissions }
     }
 
-    setPermissionBackend('none')
-    return 'none'
-  }, [permissionBackend])
+    if (!seedIfMissing) {
+      return { ok: true, permissions: null }
+    }
+
+    const defaults = { ...FULL_PAGE_PERMISSIONS }
+    const seedPayload = { user_id: userId, ...defaults }
+    console.log('[staff-permissions] seed payload', { context, payload: seedPayload })
+
+    const { data: seededData, error: seedError } = await supabase
+      .from('staff_permissions')
+      .upsert(seedPayload, { onConflict: 'user_id' })
+      .select('dashboard,pos,inventory,finance,settings')
+      .maybeSingle()
+
+    console.log('[staff-permissions] seed response', { context, data: seededData, error: seedError })
+    if (seedError) {
+      return { ok: false, message: seedError.message }
+    }
+
+    return { ok: true, permissions: normalizePermissions(seededData || defaults, 'staff') }
+  }, [])
 
   const loadProfile = useCallback(async (user) => {
     if (!user?.id) {
@@ -348,56 +355,26 @@ function App() {
   }, [pushNotice])
 
   const loadUserPermissions = useCallback(
-    async (profileRow, preferredBackend = null) => {
+    async (profileRow) => {
       if (!profileRow?.id) {
-        return { ...DEFAULT_STAFF_PERMISSIONS }
+        return { ...FULL_PAGE_PERMISSIONS }
       }
       if (profileRow.role === 'admin') {
         return { ...FULL_PAGE_PERMISSIONS }
       }
 
-      const backend = preferredBackend || (await resolvePermissionBackend())
-      if (backend === 'staff_permissions') {
-        const { data, error } = await supabase
-          .from('staff_permissions')
-          .select('dashboard,pos,inventory,finance,settings')
-          .eq('user_id', profileRow.id)
-          .maybeSingle()
-
-        if (error) {
-          if (error.code === '42P01') {
-            setPermissionBackend('profiles_permissions')
-            return loadUserPermissions(profileRow, 'profiles_permissions')
-          }
-          pushNotice('error', error.message)
-          return normalizePermissions(null, profileRow.role)
-        }
-
-        return normalizePermissions(data, profileRow.role)
+      const result = await fetchSingleStaffPermissions(profileRow.id, {
+        seedIfMissing: true,
+        context: 'load-user-permissions',
+      })
+      if (!result.ok) {
+        pushNotice('error', result.message)
+        return { ...FULL_PAGE_PERMISSIONS }
       }
 
-      if (backend === 'none') {
-        return normalizePermissions(null, profileRow.role)
-      }
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('permissions')
-        .eq('id', profileRow.id)
-        .maybeSingle()
-
-      if (error) {
-        if (error.code === '42703') {
-          setPermissionBackend('none')
-          return normalizePermissions(null, profileRow.role)
-        }
-        pushNotice('error', error.message)
-        return normalizePermissions(null, profileRow.role)
-      }
-
-      return normalizePermissions(data?.permissions, profileRow.role)
+      return normalizePermissions(result.permissions, profileRow.role)
     },
-    [pushNotice, resolvePermissionBackend],
+    [fetchSingleStaffPermissions, pushNotice],
   )
 
   const loadSettings = useCallback(async () => {
@@ -484,8 +461,7 @@ function App() {
   }, [pushNotice])
 
   const loadStaffProfiles = useCallback(
-    async ({ silent = false, showSuccess = false, preferredBackend = null } = {}) => {
-      const backend = preferredBackend || (await resolvePermissionBackend())
+    async ({ silent = false, showSuccess = false } = {}) => {
       const { data, error } = await supabase
         .from('profiles')
         .select('id,email,full_name,role,created_at')
@@ -499,58 +475,55 @@ function App() {
       }
 
       const rows = data || []
-      let permissionRows = []
-      if (rows.length > 0) {
-        if (backend === 'staff_permissions') {
-          const { data: permData, error: permError } = await supabase
-            .from('staff_permissions')
-            .select('user_id,dashboard,pos,inventory,finance,settings')
-            .in(
-              'user_id',
-              rows.map((row) => row.id),
-            )
+      const profileIds = rows.map((row) => row.id)
 
-          if (permError) {
-            if (permError.code === '42P01') {
-              setPermissionBackend('profiles_permissions')
-              return loadStaffProfiles({ silent, showSuccess, preferredBackend: 'profiles_permissions' })
-            }
-            if (!silent) {
-              pushNotice('error', permError.message)
-            }
-            return { ok: false, message: permError.message }
-          }
-
-          permissionRows = permData || []
-        } else if (backend === 'profiles_permissions') {
-          const { data: permData, error: permError } = await supabase
-            .from('profiles')
-            .select('id,permissions')
-            .in(
-              'id',
-              rows.map((row) => row.id),
-            )
-
-          if (permError && permError.code !== '42703') {
-            if (!silent) {
-              pushNotice('error', permError.message)
-            }
-            return { ok: false, message: permError.message }
-          }
-
-          if (permError?.code === '42703') {
-            setPermissionBackend('none')
-            return loadStaffProfiles({ silent, showSuccess, preferredBackend: 'none' })
-          }
-
-          permissionRows = (permData || []).map((row) => ({ user_id: row.id, ...(row.permissions || {}) }))
+      if (profileIds.length === 0) {
+        setStaffProfiles([])
+        if (showSuccess) {
+          pushNotice('success', 'Staff list refreshed.')
         }
+        return { ok: true, data: [] }
       }
 
-      const permissionMap = permissionRows.reduce((acc, row) => {
-        acc[row.user_id] = row
+      const { data: permissionRows, error: permissionError } = await supabase
+        .from('staff_permissions')
+        .select('user_id,dashboard,pos,inventory,finance,settings')
+        .in('user_id', profileIds)
+
+      if (permissionError) {
+        if (!silent) {
+          pushNotice('error', permissionError.message)
+        }
+        return { ok: false, message: permissionError.message }
+      }
+
+      const permissionMap = (permissionRows || []).reduce((acc, row) => {
+        acc[row.user_id] = normalizePermissions(row, 'staff')
         return acc
       }, {})
+
+      const missingIds = profileIds.filter((id) => !permissionMap[id])
+      if (missingIds.length > 0) {
+        const seedPayload = missingIds.map((id) => ({ user_id: id, ...FULL_PAGE_PERMISSIONS }))
+        console.log('[staff-permissions] seed missing list payload', { payload: seedPayload })
+
+        const { data: seededRows, error: seedError } = await supabase
+          .from('staff_permissions')
+          .upsert(seedPayload, { onConflict: 'user_id' })
+          .select('user_id,dashboard,pos,inventory,finance,settings')
+
+        console.log('[staff-permissions] seed missing list response', { data: seededRows, error: seedError })
+        if (seedError) {
+          if (!silent) {
+            pushNotice('error', seedError.message)
+          }
+          return { ok: false, message: seedError.message }
+        }
+
+        for (const row of seededRows || []) {
+          permissionMap[row.user_id] = normalizePermissions(row, 'staff')
+        }
+      }
 
       const mapped = rows.map((row) => ({
         ...row,
@@ -563,7 +536,7 @@ function App() {
       }
       return { ok: true, data: mapped }
     },
-    [pushNotice, resolvePermissionBackend],
+    [pushNotice],
   )
 
   const loadAll = useCallback(
@@ -1203,65 +1176,45 @@ function App() {
   )
 
   const persistStaffPermissions = useCallback(
-    async ({ profileId, role, permissions, preferredBackend = null }) => {
-      const backend = preferredBackend || (await resolvePermissionBackend())
-      const normalized = normalizePermissions(permissions, role)
+    async ({ profileId, permissions }) => {
+      const normalized = normalizePermissions(permissions, 'staff')
+      const payload = { user_id: profileId, ...normalized }
 
-      if (backend === 'none') {
-        return {
-          ok: true,
-          persisted: false,
-          permissions: normalized,
-          message: PERMISSION_BACKEND_NONE_MESSAGE,
-        }
-      }
-
-      if (backend === 'staff_permissions') {
-        const { error } = await supabase.from('staff_permissions').upsert(
-          {
-            user_id: profileId,
-            ...normalized,
-          },
-          { onConflict: 'user_id' },
-        )
-
-        if (error) {
-          if (error.code === '42P01') {
-            setPermissionBackend('profiles_permissions')
-            return persistStaffPermissions({
-              profileId,
-              role,
-              permissions: normalized,
-              preferredBackend: 'profiles_permissions',
-            })
-          }
-          return { ok: false, message: error.message }
-        }
-
-        return { ok: true, persisted: true, permissions: normalized }
-      }
-
-      const { error } = await supabase
-        .from('profiles')
-        .update({ permissions: normalized })
-        .eq('id', profileId)
+      console.log('[staff-permissions] save payload', payload)
+      const { data, error } = await supabase
+        .from('staff_permissions')
+        .upsert(payload, { onConflict: 'user_id' })
+        .select('user_id,dashboard,pos,inventory,finance,settings')
+        .maybeSingle()
+      console.log('[staff-permissions] save response', { data, error })
 
       if (error) {
-        if (error.code === '42703') {
-          setPermissionBackend('none')
-          return {
-            ok: true,
-            persisted: false,
-            permissions: normalized,
-            message: PERMISSION_BACKEND_NONE_MESSAGE,
-          }
-        }
         return { ok: false, message: error.message }
       }
 
-      return { ok: true, persisted: true, permissions: normalized }
+      return { ok: true, permissions: normalizePermissions(data || normalized, 'staff') }
     },
-    [resolvePermissionBackend],
+    [],
+  )
+
+  const getStaffPermissions = useCallback(
+    async (profileId) => {
+      const result = await fetchSingleStaffPermissions(profileId, {
+        seedIfMissing: true,
+        context: 'edit-modal-open',
+      })
+      if (!result.ok) {
+        pushNotice('error', result.message)
+        return result
+      }
+
+      console.log('[staff-permissions] modal loaded', {
+        userId: profileId,
+        permissions: result.permissions,
+      })
+      return { ok: true, permissions: result.permissions }
+    },
+    [fetchSingleStaffPermissions, pushNotice],
   )
 
   const updateStaff = useCallback(
@@ -1279,6 +1232,14 @@ function App() {
       }
 
       const nextRole = role === 'admin' ? 'admin' : 'staff'
+      const nextPermissions = normalizePermissions(permissions, nextRole)
+      console.log('[staff-permissions] update request', {
+        profileId,
+        full_name: cleanName,
+        role: nextRole,
+        permissions: nextPermissions,
+      })
+
       const { error: profileError } = await supabase
         .from('profiles')
         .update({ full_name: cleanName, role: nextRole })
@@ -1290,8 +1251,7 @@ function App() {
 
       const result = await persistStaffPermissions({
         profileId,
-        role: nextRole,
-        permissions,
+        permissions: nextPermissions,
       })
       if (!result.ok) {
         pushNotice('error', result.message)
@@ -1300,16 +1260,12 @@ function App() {
 
       if (profile?.id === profileId) {
         setProfile((prev) => (prev ? { ...prev, full_name: cleanName, role: nextRole } : prev))
-        setUserPermissions(normalizePermissions(result.permissions, nextRole))
+        setUserPermissions(nextRole === 'admin' ? { ...FULL_PAGE_PERMISSIONS } : result.permissions)
       }
 
       await loadStaffProfiles({ silent: true })
-      if (result.persisted === false) {
-        pushNotice('success', `Staff updated. ${result.message}`)
-      } else {
-        pushNotice('success', 'Staff account updated.')
-      }
-      return { ok: true, message: result.message, persisted: result.persisted !== false }
+      pushNotice('success', 'Staff account updated.')
+      return { ok: true }
     },
     [isAdmin, loadStaffProfiles, persistStaffPermissions, profile?.id, pushNotice],
   )
@@ -1326,15 +1282,12 @@ function App() {
         return { ok: false, message: 'You cannot delete your own account.' }
       }
 
-      const backend = await resolvePermissionBackend()
-      if (backend === 'staff_permissions') {
-        const { error: permissionsError } = await supabase
-          .from('staff_permissions')
-          .delete()
-          .eq('user_id', profileId)
-        if (permissionsError && permissionsError.code !== '42P01') {
-          return { ok: false, message: permissionsError.message }
-        }
+      const { error: permissionsError } = await supabase
+        .from('staff_permissions')
+        .delete()
+        .eq('user_id', profileId)
+      if (permissionsError) {
+        return { ok: false, message: permissionsError.message }
       }
 
       const { error: profileError } = await supabase.from('profiles').delete().eq('id', profileId)
@@ -1346,7 +1299,7 @@ function App() {
       pushNotice('success', `${label || 'Staff account'} deleted.`)
       return { ok: true }
     },
-    [isAdmin, loadStaffProfiles, profile?.id, pushNotice, resolvePermissionBackend],
+    [isAdmin, loadStaffProfiles, profile?.id, pushNotice],
   )
 
   const registerStaff = useCallback(
@@ -1427,7 +1380,6 @@ function App() {
 
       const permissionResult = await persistStaffPermissions({
         profileId: createdUserId,
-        role,
         permissions,
       })
       if (!permissionResult.ok) {
@@ -1435,11 +1387,7 @@ function App() {
       }
 
       await loadStaffProfiles({ silent: true })
-      if (permissionResult.persisted === false) {
-        pushNotice('success', `Staff account registered. ${permissionResult.message}`)
-      } else {
-        pushNotice('success', 'Staff account registered.')
-      }
+      pushNotice('success', 'Staff account registered.')
       return { ok: true }
     },
     [isAdmin, loadStaffProfiles, persistStaffPermissions, pushNotice],
@@ -1600,6 +1548,7 @@ function App() {
                   onRefreshProfiles={() => loadStaffProfiles({ showSuccess: true })}
                   onUpdateStaff={updateStaff}
                   onDeleteStaff={deleteStaff}
+                  onGetStaffPermissions={getStaffPermissions}
                   onRegisterStaff={registerStaff}
                   currentUserId={profile.id}
                 />
@@ -2271,10 +2220,10 @@ function InventoryPage({
               <>
                 <Button
                   size="sm"
-                  variant="secondary"
+                  variant="danger"
                   onClick={handleDeleteAllStart}
                   icon={Trash2}
-                  className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+                  className="whitespace-nowrap"
                 >
                   Delete All
                 </Button>
@@ -2311,16 +2260,22 @@ function InventoryPage({
               <td className="px-3 py-2 text-xs text-slate-800">
                 <div>{medicine.name}</div>
                 {isAdmin ? (
-                  <div className="mt-1.5 inline-flex items-center gap-1.5 md:hidden">
-                    <Button variant="secondary" size="sm" icon={Edit3} onClick={() => openEditModal(medicine)}>
+                  <div className="mt-1.5 inline-flex flex-wrap items-center gap-1.5 md:hidden">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={Edit3}
+                      className="min-w-[80px] whitespace-nowrap"
+                      onClick={() => openEditModal(medicine)}
+                    >
                       Edit
                     </Button>
                     <Button
                       size="sm"
-                      variant="secondary"
+                      variant="danger"
                       icon={Trash2}
                       onClick={() => void handleDeleteMedicine(medicine)}
-                      className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+                      className="min-w-[90px] whitespace-nowrap"
                     >
                       Delete
                     </Button>
@@ -2339,15 +2294,21 @@ function InventoryPage({
               {isAdmin ? (
                 <td className="px-3 py-2 text-xs text-right sticky right-0 bg-white hidden md:table-cell">
                   <div className="inline-flex items-center gap-2">
-                    <Button variant="secondary" size="sm" icon={Edit3} onClick={() => openEditModal(medicine)}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={Edit3}
+                      className="min-w-[80px] whitespace-nowrap"
+                      onClick={() => openEditModal(medicine)}
+                    >
                       Edit
                     </Button>
                     <Button
                       size="sm"
-                      variant="secondary"
+                      variant="danger"
                       icon={Trash2}
                       onClick={() => void handleDeleteMedicine(medicine)}
-                      className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+                      className="min-w-[90px] whitespace-nowrap"
                     >
                       Delete
                     </Button>
@@ -2492,7 +2453,7 @@ function InventoryPage({
               type="submit"
               icon={Trash2}
               disabled={deleteAllConfirmText !== 'DELETE' || deletingAll}
-              className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+              variant="danger"
             >
               {deletingAll ? 'Deleting...' : 'Confirm Delete All'}
             </Button>
@@ -2609,6 +2570,7 @@ function SettingsPage({
   onRefreshProfiles,
   onUpdateStaff,
   onDeleteStaff,
+  onGetStaffPermissions,
   onRegisterStaff,
   currentUserId,
 }) {
@@ -2619,6 +2581,7 @@ function SettingsPage({
   const [refreshingStaff, setRefreshingStaff] = useState(false)
   const [staffError, setStaffError] = useState('')
   const [showEditStaffModal, setShowEditStaffModal] = useState(false)
+  const [openingEditId, setOpeningEditId] = useState('')
   const [staffEditSubmitting, setStaffEditSubmitting] = useState(false)
   const [staffForm, setStaffForm] = useState({
     fullName: '',
@@ -2678,16 +2641,33 @@ function SettingsPage({
     setRefreshingStaff(false)
   }
 
-  const openEditStaff = (row) => {
+  const openEditStaff = async (row) => {
+    setOpeningEditId(row.id)
     setStaffEditForm({
       id: row.id,
       fullName: row.full_name || '',
       email: row.email || '',
       role: row.role === 'admin' ? 'admin' : 'staff',
-      permissions: normalizePermissions(row.permissions, row.role),
+      permissions: { ...FULL_PAGE_PERMISSIONS },
     })
     setStaffError('')
+    const permissionResult = await onGetStaffPermissions(row.id)
+    if (!permissionResult.ok) {
+      setStaffError(permissionResult.message || 'Failed to load access permissions.')
+      setOpeningEditId('')
+      return
+    }
+
+    console.log('[staff-permissions] modal init permissions', {
+      userId: row.id,
+      permissions: permissionResult.permissions,
+    })
+    setStaffEditForm((prev) => ({
+      ...prev,
+      permissions: normalizePermissions(permissionResult.permissions, row.role),
+    }))
     setShowEditStaffModal(true)
+    setOpeningEditId('')
   }
 
   const submitEditStaff = async (event) => {
@@ -2848,14 +2828,19 @@ function SettingsPage({
                 <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(row.created_at)}</td>
                 <td className="px-3 py-2 text-xs text-right">
                   <div className="inline-flex items-center gap-2">
-                    <Button size="sm" variant="secondary" icon={Edit3} onClick={() => openEditStaff(row)}>
-                      Edit
-                    </Button>
                     <Button
                       size="sm"
                       variant="secondary"
+                      icon={Edit3}
+                      onClick={() => void openEditStaff(row)}
+                      disabled={openingEditId === row.id}
+                    >
+                      {openingEditId === row.id ? 'Loading...' : 'Edit'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
                       icon={Trash2}
-                      className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
                       onClick={() => void handleDeleteStaff(row)}
                       disabled={row.id === currentUserId}
                     >
@@ -3121,6 +3106,7 @@ function Button({
     primary: 'bg-indigo-600 text-white hover:bg-indigo-700 border border-indigo-600',
     secondary: 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200',
     ghost: 'bg-transparent text-slate-600 hover:bg-slate-100 border border-transparent',
+    danger: 'bg-rose-600 text-white hover:bg-rose-700 border border-rose-600',
   }
 
   const sizeClasses = {
@@ -3131,7 +3117,7 @@ function Button({
   return (
     <button
       type={type}
-      className={`inline-flex items-center justify-center gap-1.5 font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${variantClasses[variant]} ${sizeClasses[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${variantClasses[variant]} ${sizeClasses[size]} ${className}`}
       {...props}
     >
       {Icon ? <Icon size={14} /> : null}
