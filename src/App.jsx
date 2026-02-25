@@ -8,6 +8,7 @@ import {
   DollarSign,
   Edit3,
   LayoutDashboard,
+  Loader2,
   LogOut,
   Menu,
   Minus,
@@ -44,6 +45,30 @@ const PAGE_TITLES = {
 
 const PAYMENT_METHODS = ['cash', 'card', 'insurance']
 const LOW_STOCK_THRESHOLD = 10
+const PAGE_ACCESS_FIELDS = ['dashboard', 'pos', 'inventory', 'finance', 'settings']
+const PAGE_ACCESS_LABELS = {
+  dashboard: 'Dashboard',
+  pos: 'Point of Sale',
+  inventory: 'Inventory',
+  finance: 'Finance',
+  settings: 'Settings',
+}
+
+const DEFAULT_STAFF_PERMISSIONS = {
+  dashboard: true,
+  pos: true,
+  inventory: true,
+  finance: true,
+  settings: false,
+}
+
+const FULL_PAGE_PERMISSIONS = {
+  dashboard: true,
+  pos: true,
+  inventory: true,
+  finance: true,
+  settings: true,
+}
 
 const DEFAULT_SETTINGS = {
   id: null,
@@ -205,6 +230,18 @@ function mapSettingsRow(row) {
   }
 }
 
+function normalizePermissions(raw, role = 'staff') {
+  const base = role === 'admin' ? FULL_PAGE_PERMISSIONS : DEFAULT_STAFF_PERMISSIONS
+  if (!raw || typeof raw !== 'object') {
+    return { ...base }
+  }
+
+  return PAGE_ACCESS_FIELDS.reduce((acc, field) => {
+    acc[field] = raw[field] === undefined ? base[field] : Boolean(raw[field])
+    return acc
+  }, {})
+}
+
 function App() {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
@@ -237,12 +274,39 @@ function App() {
   })
 
   const [notice, setNotice] = useState(null)
+  const [permissionBackend, setPermissionBackend] = useState(null)
+  const [userPermissions, setUserPermissions] = useState(() => ({ ...DEFAULT_STAFF_PERMISSIONS }))
 
   const pushNotice = useCallback((type, message) => {
     setNotice({ type, message })
     window.clearTimeout(pushNotice.timer)
     pushNotice.timer = window.setTimeout(() => setNotice(null), 3200)
   }, [])
+
+  const resolvePermissionBackend = useCallback(async () => {
+    if (permissionBackend) {
+      return permissionBackend
+    }
+
+    const { error } = await supabase.from('staff_permissions').select('user_id').limit(1)
+    if (!error) {
+      setPermissionBackend('staff_permissions')
+      return 'staff_permissions'
+    }
+
+    if (error?.code === '42P01' || /staff_permissions.+does not exist/i.test(error?.message || '')) {
+      setPermissionBackend('profiles_permissions')
+      return 'profiles_permissions'
+    }
+
+    if (error?.code === '42501') {
+      setPermissionBackend('staff_permissions')
+      return 'staff_permissions'
+    }
+
+    setPermissionBackend('profiles_permissions')
+    return 'profiles_permissions'
+  }, [permissionBackend])
 
   const loadProfile = useCallback(async (user) => {
     if (!user?.id) {
@@ -276,6 +340,54 @@ function App() {
       created_at: new Date().toISOString(),
     }
   }, [pushNotice])
+
+  const loadUserPermissions = useCallback(
+    async (profileRow, preferredBackend = null) => {
+      if (!profileRow?.id) {
+        return { ...DEFAULT_STAFF_PERMISSIONS }
+      }
+      if (profileRow.role === 'admin') {
+        return { ...FULL_PAGE_PERMISSIONS }
+      }
+
+      const backend = preferredBackend || (await resolvePermissionBackend())
+      if (backend === 'staff_permissions') {
+        const { data, error } = await supabase
+          .from('staff_permissions')
+          .select('dashboard,pos,inventory,finance,settings')
+          .eq('user_id', profileRow.id)
+          .maybeSingle()
+
+        if (error) {
+          if (error.code === '42P01') {
+            setPermissionBackend('profiles_permissions')
+            return loadUserPermissions(profileRow, 'profiles_permissions')
+          }
+          pushNotice('error', error.message)
+          return normalizePermissions(null, profileRow.role)
+        }
+
+        return normalizePermissions(data, profileRow.role)
+      }
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('permissions')
+        .eq('id', profileRow.id)
+        .maybeSingle()
+
+      if (error) {
+        if (error.code === '42703') {
+          return normalizePermissions(null, profileRow.role)
+        }
+        pushNotice('error', error.message)
+        return normalizePermissions(null, profileRow.role)
+      }
+
+      return normalizePermissions(data?.permissions, profileRow.role)
+    },
+    [pushNotice, resolvePermissionBackend],
+  )
 
   const loadSettings = useCallback(async () => {
     const { data, error } = await supabase
@@ -360,33 +472,113 @@ function App() {
     setTransactions(mapped)
   }, [pushNotice])
 
-  const loadStaffProfiles = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id,email,full_name,role,created_at')
-      .order('created_at', { ascending: false })
+  const loadStaffProfiles = useCallback(
+    async ({ silent = false, showSuccess = false, preferredBackend = null } = {}) => {
+      const backend = preferredBackend || (await resolvePermissionBackend())
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id,email,full_name,role,created_at')
+        .order('created_at', { ascending: false })
 
-    if (error) {
-      pushNotice('error', error.message)
-      return
-    }
-
-    setStaffProfiles(data || [])
-  }, [pushNotice])
-
-  const loadAll = useCallback(async (role) => {
-    setAppLoading(true)
-    try {
-      if (role === 'admin') {
-        await Promise.all([loadSettings(), loadMedicines(), loadTransactions(), loadStaffProfiles()])
-      } else {
-        await Promise.all([loadSettings(), loadMedicines(), loadTransactions()])
-        setStaffProfiles([])
+      if (error) {
+        if (!silent) {
+          pushNotice('error', error.message)
+        }
+        return { ok: false, message: error.message }
       }
-    } finally {
-      setAppLoading(false)
-    }
-  }, [loadMedicines, loadSettings, loadStaffProfiles, loadTransactions])
+
+      const rows = data || []
+      let permissionRows = []
+      if (rows.length > 0) {
+        if (backend === 'staff_permissions') {
+          const { data: permData, error: permError } = await supabase
+            .from('staff_permissions')
+            .select('user_id,dashboard,pos,inventory,finance,settings')
+            .in(
+              'user_id',
+              rows.map((row) => row.id),
+            )
+
+          if (permError) {
+            if (permError.code === '42P01') {
+              setPermissionBackend('profiles_permissions')
+              return loadStaffProfiles({ silent, showSuccess, preferredBackend: 'profiles_permissions' })
+            }
+            if (!silent) {
+              pushNotice('error', permError.message)
+            }
+            return { ok: false, message: permError.message }
+          }
+
+          permissionRows = permData || []
+        } else {
+          const { data: permData, error: permError } = await supabase
+            .from('profiles')
+            .select('id,permissions')
+            .in(
+              'id',
+              rows.map((row) => row.id),
+            )
+
+          if (permError && permError.code !== '42703') {
+            if (!silent) {
+              pushNotice('error', permError.message)
+            }
+            return { ok: false, message: permError.message }
+          }
+
+          permissionRows = (permData || []).map((row) => ({ user_id: row.id, ...(row.permissions || {}) }))
+        }
+      }
+
+      const permissionMap = permissionRows.reduce((acc, row) => {
+        acc[row.user_id] = row
+        return acc
+      }, {})
+
+      const mapped = rows.map((row) => ({
+        ...row,
+        permissions: normalizePermissions(permissionMap[row.id], row.role),
+      }))
+
+      setStaffProfiles(mapped)
+      if (showSuccess) {
+        pushNotice('success', 'Staff list refreshed.')
+      }
+      return { ok: true, data: mapped }
+    },
+    [pushNotice, resolvePermissionBackend],
+  )
+
+  const loadAll = useCallback(
+    async (profileRow) => {
+      if (!profileRow?.id) {
+        return
+      }
+
+      setAppLoading(true)
+      try {
+        const permissionPromise = loadUserPermissions(profileRow)
+        if (profileRow.role === 'admin') {
+          await Promise.all([
+            loadSettings(),
+            loadMedicines(),
+            loadTransactions(),
+            loadStaffProfiles({ silent: true }),
+          ])
+        } else {
+          await Promise.all([loadSettings(), loadMedicines(), loadTransactions()])
+          setStaffProfiles([])
+        }
+
+        const permissions = await permissionPromise
+        setUserPermissions(permissions)
+      } finally {
+        setAppLoading(false)
+      }
+    },
+    [loadMedicines, loadSettings, loadStaffProfiles, loadTransactions, loadUserPermissions],
+  )
 
   useEffect(() => {
     if (!hasSupabaseEnv) {
@@ -406,6 +598,7 @@ function App() {
       setSettings(DEFAULT_SETTINGS)
       setCart([])
       setSaleSubmitting(false)
+      setUserPermissions({ ...DEFAULT_STAFF_PERMISSIONS })
     }
 
     authTimeoutId = window.setTimeout(() => {
@@ -521,7 +714,7 @@ function App() {
     if (!session?.user || !profile?.role) {
       return
     }
-    void loadAll(profile.role)
+    void loadAll(profile)
   }, [session, profile, loadAll])
 
   useEffect(() => {
@@ -545,6 +738,21 @@ function App() {
   }, [medicines])
 
   const isAdmin = profile?.role === 'admin'
+
+  const canAccessPage = useCallback(
+    (pageId) => {
+      if (isAdmin) {
+        return true
+      }
+      return Boolean(userPermissions[pageId])
+    },
+    [isAdmin, userPermissions],
+  )
+
+  const visibleNavItems = useMemo(
+    () => NAV_ITEMS.filter((item) => canAccessPage(item.id)),
+    [canAccessPage],
+  )
 
   const inventoryWithStatus = useMemo(
     () => medicines.map((item) => ({ ...item, status: medicineStatus(item) })),
@@ -653,6 +861,7 @@ function App() {
     setHeaderSearch('')
     setCart([])
     setPaymentMethod(PAYMENT_METHODS[0])
+    setUserPermissions({ ...DEFAULT_STAFF_PERMISSIONS })
   }, [])
 
   const addToCart = useCallback(
@@ -962,6 +1171,82 @@ function App() {
     [isAdmin, pushNotice],
   )
 
+  const persistStaffPermissions = useCallback(
+    async ({ profileId, role, permissions, preferredBackend = null }) => {
+      const backend = preferredBackend || (await resolvePermissionBackend())
+      const normalized = normalizePermissions(permissions, role)
+
+      if (backend === 'staff_permissions') {
+        const { error } = await supabase.from('staff_permissions').upsert(
+          {
+            user_id: profileId,
+            ...normalized,
+          },
+          { onConflict: 'user_id' },
+        )
+
+        if (error) {
+          if (error.code === '42P01') {
+            setPermissionBackend('profiles_permissions')
+            return persistStaffPermissions({
+              profileId,
+              role,
+              permissions: normalized,
+              preferredBackend: 'profiles_permissions',
+            })
+          }
+          return { ok: false, message: error.message }
+        }
+
+        return { ok: true, permissions: normalized }
+      }
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({ permissions: normalized })
+        .eq('id', profileId)
+
+      if (error) {
+        if (error.code === '42703') {
+          return {
+            ok: false,
+            message:
+              'Permissions column not found in profiles. Add public.profiles.permissions jsonb or use staff_permissions table.',
+          }
+        }
+        return { ok: false, message: error.message }
+      }
+
+      return { ok: true, permissions: normalized }
+    },
+    [resolvePermissionBackend],
+  )
+
+  const saveStaffPermissions = useCallback(
+    async (profileId, permissions) => {
+      if (!isAdmin) {
+        return { ok: false, message: 'Only admins can update staff access.' }
+      }
+
+      const profileRow = staffProfiles.find((row) => row.id === profileId)
+      const targetRole = profileRow?.role || 'staff'
+      const result = await persistStaffPermissions({ profileId, role: targetRole, permissions })
+      if (!result.ok) {
+        pushNotice('error', result.message)
+        return result
+      }
+
+      if (profile?.id === profileId) {
+        setUserPermissions(result.permissions)
+      }
+
+      await loadStaffProfiles({ silent: true })
+      pushNotice('success', 'Access permissions updated.')
+      return { ok: true }
+    },
+    [isAdmin, loadStaffProfiles, persistStaffPermissions, profile?.id, pushNotice, staffProfiles],
+  )
+
   const registerStaff = useCallback(
     async (payload) => {
       if (!isAdmin) {
@@ -971,6 +1256,8 @@ function App() {
       const fullName = String(payload.fullName || '').trim()
       const email = String(payload.email || '').trim().toLowerCase()
       const password = String(payload.password || '')
+      const role = payload.role === 'admin' ? 'admin' : 'staff'
+      const permissions = normalizePermissions(payload.permissions, role)
 
       if (!fullName || !email || !password) {
         return { ok: false, message: 'Name, email, and password are required.' }
@@ -1029,18 +1316,27 @@ function App() {
 
       const { error: roleError } = await supabase
         .from('profiles')
-        .update({ role: 'staff', full_name: fullName, email })
+        .update({ role, full_name: fullName, email })
         .eq('id', createdUserId)
 
       if (roleError) {
         return { ok: false, message: roleError.message }
       }
 
-      await loadStaffProfiles()
+      const permissionResult = await persistStaffPermissions({
+        profileId: createdUserId,
+        role,
+        permissions,
+      })
+      if (!permissionResult.ok) {
+        return permissionResult
+      }
+
+      await loadStaffProfiles({ silent: true })
       pushNotice('success', 'Staff account registered.')
       return { ok: true }
     },
-    [isAdmin, loadStaffProfiles, pushNotice],
+    [isAdmin, loadStaffProfiles, persistStaffPermissions, pushNotice],
   )
 
   const updateStaffRole = useCallback(
@@ -1056,11 +1352,25 @@ function App() {
         return { ok: false, message: error.message }
       }
 
-      await loadStaffProfiles()
+      const existingPermissions =
+        staffProfiles.find((row) => row.id === profileId)?.permissions || DEFAULT_STAFF_PERMISSIONS
+      const permissionResult = await persistStaffPermissions({
+        profileId,
+        role: nextRole,
+        permissions: existingPermissions,
+      })
+      if (!permissionResult.ok) {
+        return permissionResult
+      }
+
+      await loadStaffProfiles({ silent: true })
+      if (profile?.id === profileId) {
+        setUserPermissions(normalizePermissions(permissionResult.permissions, nextRole))
+      }
       pushNotice('success', 'Staff role updated.')
       return { ok: true }
     },
-    [isAdmin, loadStaffProfiles, pushNotice],
+    [isAdmin, loadStaffProfiles, persistStaffPermissions, profile?.id, pushNotice, staffProfiles],
   )
 
   if (!hasSupabaseEnv) {
@@ -1083,6 +1393,9 @@ function App() {
 
   const userDisplayName = profile.full_name || profile.email || 'User'
   const authSyncing = authLoading || profileLoading
+  const showHeaderSearch = activePage === 'inventory' || activePage === 'pos'
+  const activePageAllowed = canAccessPage(activePage)
+  const pageTitle = PAGE_TITLES[activePage] || 'Dashboard'
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 text-sm">
@@ -1097,9 +1410,15 @@ function App() {
 
       <Sidebar
         activePage={activePage}
+        navItems={visibleNavItems}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onNavigate={(page) => {
+          if (!canAccessPage(page)) {
+            pushNotice('error', `No access to ${PAGE_TITLES[page] || page}.`)
+            setSidebarOpen(false)
+            return
+          }
           setActivePage(page)
           setSidebarOpen(false)
         }}
@@ -1107,19 +1426,22 @@ function App() {
 
       <div className="md:pl-64">
         <HeaderBar
-          title={PAGE_TITLES[activePage]}
-          breadcrumb={['Home', PAGE_TITLES[activePage]]}
+          title={pageTitle}
+          breadcrumb={['Home', pageTitle]}
           searchValue={headerSearch}
           onSearchChange={setHeaderSearch}
           onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
           user={{ name: userDisplayName, email: profile.email, role: profile.role }}
           onLogout={handleLogout}
+          showSearch={showHeaderSearch}
         />
 
         <main className="max-w-7xl mx-auto w-full p-3 sm:p-4 md:p-6 space-y-4">
-          {authSyncing ? (
-            <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
-              Syncing account state...
+          {authSyncing || appLoading ? (
+            <div className="flex justify-end">
+              <span className="inline-flex items-center justify-center h-7 w-7 rounded-full border border-slate-200 bg-white text-slate-500">
+                <Loader2 size={14} className="animate-spin" />
+              </span>
             </div>
           ) : null}
 
@@ -1135,81 +1457,82 @@ function App() {
             </div>
           ) : null}
 
-          {appLoading ? (
-            <Card>
-              <p className="text-sm text-slate-600">Syncing data from Supabase...</p>
-            </Card>
-          ) : null}
+          {!activePageAllowed ? (
+            <NoAccessCard pageTitle={pageTitle} />
+          ) : (
+            <>
+              {activePage === 'dashboard' ? (
+                <DashboardPage
+                  stats={dashboardStats}
+                  transactions={transactions}
+                  inventorySignals={inventorySignals}
+                  currency={settings.currency}
+                />
+              ) : null}
 
-          {activePage === 'dashboard' ? (
-            <DashboardPage
-              stats={dashboardStats}
-              transactions={transactions}
-              inventorySignals={inventorySignals}
-              currency={settings.currency}
-            />
-          ) : null}
+              {activePage === 'pos' ? (
+                <POSPage
+                  medicines={inventoryWithStatus}
+                  categories={categoryOptions}
+                  globalSearch={headerSearch}
+                  cart={cart}
+                  paymentMethod={paymentMethod}
+                  onPaymentMethodChange={setPaymentMethod}
+                  onAddToCart={addToCart}
+                  onUpdateQty={updateCartQty}
+                  onRemoveItem={removeCartItem}
+                  onCompleteSale={completeSale}
+                  isSubmittingSale={saleSubmitting}
+                  subtotal={cartSubtotal}
+                  tax={cartTax}
+                  total={cartTotal}
+                  currency={settings.currency}
+                />
+              ) : null}
 
-          {activePage === 'pos' ? (
-            <POSPage
-              medicines={inventoryWithStatus}
-              categories={categoryOptions}
-              globalSearch={headerSearch}
-              cart={cart}
-              paymentMethod={paymentMethod}
-              onPaymentMethodChange={setPaymentMethod}
-              onAddToCart={addToCart}
-              onUpdateQty={updateCartQty}
-              onRemoveItem={removeCartItem}
-              onCompleteSale={completeSale}
-              isSubmittingSale={saleSubmitting}
-              subtotal={cartSubtotal}
-              tax={cartTax}
-              total={cartTotal}
-              currency={settings.currency}
-            />
-          ) : null}
+              {activePage === 'inventory' ? (
+                <InventoryPage
+                  medicines={inventoryWithStatus}
+                  categories={categoryOptions}
+                  globalSearch={headerSearch}
+                  isAdmin={isAdmin}
+                  onAddMedicine={addMedicine}
+                  onUpdateMedicine={updateMedicine}
+                  onDeleteMedicine={deleteMedicine}
+                  onClearInventory={clearInventory}
+                  currency={settings.currency}
+                />
+              ) : null}
 
-          {activePage === 'inventory' ? (
-            <InventoryPage
-              medicines={inventoryWithStatus}
-              categories={categoryOptions}
-              globalSearch={headerSearch}
-              isAdmin={isAdmin}
-              onAddMedicine={addMedicine}
-              onUpdateMedicine={updateMedicine}
-              onDeleteMedicine={deleteMedicine}
-              onClearInventory={clearInventory}
-              currency={settings.currency}
-            />
-          ) : null}
+              {activePage === 'finance' ? (
+                <FinancePage
+                  transactions={filteredFinanceTransactions}
+                  series={financeSeries}
+                  paymentBreakdown={financePaymentBreakdown}
+                  currency={settings.currency}
+                  range={financeRange}
+                  onRangeChange={(key, value) =>
+                    setFinanceRange((prev) => ({ ...prev, [key]: value, preset: 'custom' }))
+                  }
+                  onApplyPreset={setFinancePreset}
+                />
+              ) : null}
 
-          {activePage === 'finance' ? (
-            <FinancePage
-              transactions={filteredFinanceTransactions}
-              series={financeSeries}
-              paymentBreakdown={financePaymentBreakdown}
-              currency={settings.currency}
-              range={financeRange}
-              onRangeChange={(key, value) =>
-                setFinanceRange((prev) => ({ ...prev, [key]: value, preset: 'custom' }))
-              }
-              onApplyPreset={setFinancePreset}
-            />
-          ) : null}
-
-          {activePage === 'settings' ? (
-            <SettingsPage
-              settings={settings}
-              setSettings={setSettings}
-              onSaveSettings={saveSettings}
-              isAdmin={isAdmin}
-              profiles={staffProfiles}
-              onRefreshProfiles={loadStaffProfiles}
-              onUpdateStaffRole={updateStaffRole}
-              onRegisterStaff={registerStaff}
-            />
-          ) : null}
+              {activePage === 'settings' ? (
+                <SettingsPage
+                  settings={settings}
+                  setSettings={setSettings}
+                  onSaveSettings={saveSettings}
+                  isAdmin={isAdmin}
+                  profiles={staffProfiles}
+                  onRefreshProfiles={() => loadStaffProfiles({ showSuccess: true })}
+                  onUpdateStaffRole={updateStaffRole}
+                  onRegisterStaff={registerStaff}
+                  onSaveStaffPermissions={saveStaffPermissions}
+                />
+              ) : null}
+            </>
+          )}
         </main>
       </div>
     </div>
@@ -1273,7 +1596,7 @@ function LoginScreen({ onLogin }) {
   )
 }
 
-function Sidebar({ activePage, isOpen, onClose, onNavigate }) {
+function Sidebar({ activePage, navItems, isOpen, onClose, onNavigate }) {
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-40 w-64 overflow-y-auto bg-white/60 backdrop-blur-md border-r border-slate-200 transition-transform duration-200 md:translate-x-0 ${
@@ -1296,7 +1619,7 @@ function Sidebar({ activePage, isOpen, onClose, onNavigate }) {
       </div>
 
       <nav className="p-3 space-y-1.5">
-        {NAV_ITEMS.map((item) => {
+        {navItems.map((item) => {
           const Icon = item.icon
           const active = activePage === item.id
           return (
@@ -1320,7 +1643,16 @@ function Sidebar({ activePage, isOpen, onClose, onNavigate }) {
   )
 }
 
-function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSidebar, user, onLogout }) {
+function HeaderBar({
+  title,
+  breadcrumb,
+  searchValue,
+  onSearchChange,
+  onToggleSidebar,
+  user,
+  onLogout,
+  showSearch,
+}) {
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
@@ -1350,15 +1682,17 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
         </div>
 
         <div className="flex items-center gap-2 flex-1 justify-end">
-          <div className="hidden md:flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 h-9 w-full max-w-sm">
-            <Search size={15} className="text-slate-400" />
-            <input
-              value={searchValue}
-              onChange={(event) => onSearchChange(event.target.value)}
-              className="w-full bg-transparent outline-none text-sm placeholder:text-slate-400"
-              placeholder="Search medicines, sku, categories..."
-            />
-          </div>
+          {showSearch ? (
+            <div className="hidden md:flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 h-9 w-full max-w-sm">
+              <Search size={15} className="text-slate-400" />
+              <input
+                value={searchValue}
+                onChange={(event) => onSearchChange(event.target.value)}
+                className="w-full bg-transparent outline-none text-sm placeholder:text-slate-400"
+                placeholder="Search medicines, sku, categories..."
+              />
+            </div>
+          ) : null}
 
           <div className="hidden lg:flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 h-9 text-xs text-slate-600">
             <CalendarDays size={14} />
@@ -1410,17 +1744,19 @@ function HeaderBar({ title, breadcrumb, searchValue, onSearchChange, onToggleSid
         </div>
       </div>
 
-      <div className="px-4 pb-3 md:hidden">
-        <div className="rounded-xl border border-slate-200 bg-white px-3 h-9 flex items-center gap-2">
-          <Search size={15} className="text-slate-400" />
-          <input
-            value={searchValue}
-            onChange={(event) => onSearchChange(event.target.value)}
-            className="w-full bg-transparent outline-none text-sm placeholder:text-slate-400"
-            placeholder="Search medicines, sku, categories..."
-          />
+      {showSearch ? (
+        <div className="px-4 pb-3 md:hidden">
+          <div className="rounded-xl border border-slate-200 bg-white px-3 h-9 flex items-center gap-2">
+            <Search size={15} className="text-slate-400" />
+            <input
+              value={searchValue}
+              onChange={(event) => onSearchChange(event.target.value)}
+              className="w-full bg-transparent outline-none text-sm placeholder:text-slate-400"
+              placeholder="Search medicines, sku, categories..."
+            />
+          </div>
         </div>
-      </div>
+      ) : null}
     </header>
   )
 }
@@ -1478,6 +1814,16 @@ function DashboardPage({ stats, transactions, inventorySignals, currency }) {
         </Card>
       </div>
     </div>
+  )
+}
+
+function NoAccessCard({ pageTitle }) {
+  return (
+    <Card title="No Access" subtitle={`You do not have permission to open ${pageTitle}.`}>
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-600">
+        Contact an admin to update your page access permissions.
+      </div>
+    </Card>
   )
 }
 
@@ -2165,17 +2511,25 @@ function SettingsPage({
   onRefreshProfiles,
   onUpdateStaffRole,
   onRegisterStaff,
+  onSaveStaffPermissions,
 }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [showStaffModal, setShowStaffModal] = useState(false)
   const [staffSubmitting, setStaffSubmitting] = useState(false)
+  const [refreshingStaff, setRefreshingStaff] = useState(false)
   const [staffError, setStaffError] = useState('')
+  const [showAccessModal, setShowAccessModal] = useState(false)
+  const [accessTarget, setAccessTarget] = useState(null)
+  const [savingAccess, setSavingAccess] = useState(false)
   const [staffForm, setStaffForm] = useState({
     fullName: '',
     email: '',
     password: '',
+    role: 'staff',
+    permissions: { ...DEFAULT_STAFF_PERMISSIONS },
   })
+  const [accessForm, setAccessForm] = useState({ ...DEFAULT_STAFF_PERMISSIONS })
 
   const save = async () => {
     setSaving(true)
@@ -2199,9 +2553,25 @@ function SettingsPage({
       return
     }
 
-    setStaffForm({ fullName: '', email: '', password: '' })
+    setStaffForm({
+      fullName: '',
+      email: '',
+      password: '',
+      role: 'staff',
+      permissions: { ...DEFAULT_STAFF_PERMISSIONS },
+    })
     setShowStaffModal(false)
     setStaffSubmitting(false)
+  }
+
+  const refreshStaff = async () => {
+    setRefreshingStaff(true)
+    setStaffError('')
+    const result = await onRefreshProfiles()
+    if (!result?.ok) {
+      setStaffError(result?.message || 'Failed to refresh staff list.')
+    }
+    setRefreshingStaff(false)
   }
 
   const handleRoleChange = async (profileId, role) => {
@@ -2212,6 +2582,33 @@ function SettingsPage({
     }
   }
 
+  const openAccessModal = (row) => {
+    setAccessTarget(row)
+    setAccessForm(normalizePermissions(row.permissions, row.role))
+    setStaffError('')
+    setShowAccessModal(true)
+  }
+
+  const submitAccess = async (event) => {
+    event.preventDefault()
+    if (!accessTarget) {
+      return
+    }
+
+    setSavingAccess(true)
+    setStaffError('')
+    const result = await onSaveStaffPermissions(accessTarget.id, accessForm)
+    if (!result.ok) {
+      setStaffError(result.message)
+      setSavingAccess(false)
+      return
+    }
+
+    setSavingAccess(false)
+    setShowAccessModal(false)
+    setAccessTarget(null)
+  }
+
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
       <Card title="General" subtitle="Store level settings">
@@ -2220,6 +2617,7 @@ function SettingsPage({
             label="Store Name"
             value={settings.store_name}
             onChange={(event) => setSettings((prev) => ({ ...prev, store_name: event.target.value }))}
+            disabled={!isAdmin}
           />
 
           <label className="space-y-1 block">
@@ -2228,6 +2626,7 @@ function SettingsPage({
               className="w-full h-9 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none"
               value={settings.currency}
               onChange={(event) => setSettings((prev) => ({ ...prev, currency: event.target.value }))}
+              disabled={!isAdmin}
             >
               <option value="USD">USD</option>
               <option value="EUR">EUR</option>
@@ -2243,11 +2642,13 @@ function SettingsPage({
             label="Address"
             value={settings.address}
             onChange={(event) => setSettings((prev) => ({ ...prev, address: event.target.value }))}
+            disabled={!isAdmin}
           />
           <Input
             label="Phone"
             value={settings.phone}
             onChange={(event) => setSettings((prev) => ({ ...prev, phone: event.target.value }))}
+            disabled={!isAdmin}
           />
           <Input
             label="Support Email"
@@ -2256,6 +2657,7 @@ function SettingsPage({
             onChange={(event) =>
               setSettings((prev) => ({ ...prev, support_email: event.target.value }))
             }
+            disabled={!isAdmin}
           />
         </div>
       </Card>
@@ -2278,14 +2680,20 @@ function SettingsPage({
         <Card
           className="xl:col-span-2"
           title="Staff Management"
-          subtitle="Create staff accounts and manage profile roles"
+          subtitle="Create staff accounts, roles, and page access"
           action={
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button size="sm" icon={Users} onClick={() => setShowStaffModal(true)}>
                 Add Staff
               </Button>
-              <Button size="sm" variant="secondary" icon={RefreshCcw} onClick={() => void onRefreshProfiles()}>
-                Refresh
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={RefreshCcw}
+                onClick={() => void refreshStaff()}
+                disabled={refreshingStaff}
+              >
+                {refreshingStaff ? 'Refreshing...' : 'Refresh'}
               </Button>
             </div>
           }
@@ -2297,6 +2705,7 @@ function SettingsPage({
               { label: 'Email' },
               { label: 'Status' },
               { label: 'Role' },
+              { label: 'Access' },
               { label: 'Created' },
             ]}
           >
@@ -2317,6 +2726,17 @@ function SettingsPage({
                     <option value="admin">admin</option>
                   </select>
                 </td>
+                <td className="px-3 py-2 text-xs">
+                  <div className="inline-flex items-center justify-end gap-2 w-full">
+                    <span className="text-slate-500">
+                      {PAGE_ACCESS_FIELDS.filter((field) => row.permissions?.[field]).length}/
+                      {PAGE_ACCESS_FIELDS.length}
+                    </span>
+                    <Button size="sm" variant="secondary" onClick={() => openAccessModal(row)}>
+                      Access
+                    </Button>
+                  </div>
+                </td>
                 <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(row.created_at)}</td>
               </tr>
             ))}
@@ -2334,7 +2754,7 @@ function SettingsPage({
         open={showStaffModal}
         onClose={() => setShowStaffModal(false)}
         title="Add Staff Account"
-        description="Creates a Supabase Auth user and sets profile role to staff."
+        description="Creates a Supabase Auth user and sets role plus initial page access."
       >
         <form className="space-y-3" onSubmit={(event) => void submitStaff(event)}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2359,9 +2779,49 @@ function SettingsPage({
                 setStaffForm((prev) => ({ ...prev, password: event.target.value }))
               }
             />
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-              <p className="text-xs text-slate-500">Role</p>
-              <p className="text-sm font-medium text-slate-900 mt-1">staff</p>
+            <label className="space-y-1 block">
+              <span className="text-xs font-medium text-slate-600">Role</span>
+              <select
+                className="w-full h-9 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none"
+                value={staffForm.role}
+                onChange={(event) => {
+                  const role = event.target.value === 'admin' ? 'admin' : 'staff'
+                  setStaffForm((prev) => ({
+                    ...prev,
+                    role,
+                    permissions:
+                      role === 'admin'
+                        ? { ...FULL_PAGE_PERMISSIONS }
+                        : normalizePermissions(prev.permissions, role),
+                  }))
+                }}
+              >
+                <option value="staff">staff</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-medium text-slate-600 mb-2">Initial Access</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {PAGE_ACCESS_FIELDS.map((field) => (
+                <label key={field} className="inline-flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    checked={Boolean(staffForm.permissions[field])}
+                    disabled={staffForm.role === 'admin'}
+                    onChange={(event) =>
+                      setStaffForm((prev) => ({
+                        ...prev,
+                        permissions: { ...prev.permissions, [field]: event.target.checked },
+                      }))
+                    }
+                  />
+                  <span>{PAGE_ACCESS_LABELS[field]}</span>
+                </label>
+              ))}
             </div>
           </div>
 
@@ -2377,6 +2837,49 @@ function SettingsPage({
             </Button>
             <Button type="submit" icon={Users} disabled={staffSubmitting}>
               {staffSubmitting ? 'Creating...' : 'Create Staff'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={showAccessModal}
+        onClose={() => setShowAccessModal(false)}
+        title="Staff Access"
+        description={
+          accessTarget
+            ? `Set page access for ${accessTarget.full_name || accessTarget.email || 'staff user'}.`
+            : ''
+        }
+      >
+        <form className="space-y-3" onSubmit={(event) => void submitAccess(event)}>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {PAGE_ACCESS_FIELDS.map((field) => (
+                <label key={field} className="inline-flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    checked={Boolean(accessForm[field])}
+                    onChange={(event) =>
+                      setAccessForm((prev) => ({
+                        ...prev,
+                        [field]: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span>{PAGE_ACCESS_LABELS[field]}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setShowAccessModal(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={savingAccess}>
+              {savingAccess ? 'Saving...' : 'Save Access'}
             </Button>
           </div>
         </form>
