@@ -2295,7 +2295,7 @@ function InventoryPage({
             { label: 'Stock', className: 'text-right' },
             { label: 'Expiry' },
             { label: 'Status' },
-            ...(isAdmin ? [{ label: 'Actions', className: 'text-right' }] : []),
+            ...(isAdmin ? [{ label: 'Actions', className: 'text-right sticky right-0 bg-white z-10' }] : []),
           ]}
         >
           {filtered.map((medicine) => (
@@ -2312,7 +2312,7 @@ function InventoryPage({
                 <Badge tone={statusTone(medicine.status)}>{medicine.status}</Badge>
               </td>
               {isAdmin ? (
-                <td className="px-3 py-2 text-xs text-right">
+                <td className="px-3 py-2 text-xs text-right sticky right-0 bg-white">
                   <div className="inline-flex items-center gap-2">
                     <Button variant="secondary" size="sm" icon={Edit3} onClick={() => openEditModal(medicine)}>
                       Edit
