@@ -70,6 +70,9 @@ const FULL_PAGE_PERMISSIONS = {
   settings: true,
 }
 
+const PERMISSION_BACKEND_NONE_MESSAGE =
+  'Permissions storage is not configured. Run the staff_permissions migration or add profiles.permissions jsonb.'
+
 const DEFAULT_SETTINGS = {
   id: null,
   store_name: 'NovaCare Pharmacy',
@@ -294,18 +297,27 @@ function App() {
       return 'staff_permissions'
     }
 
-    if (error?.code === '42P01' || /staff_permissions.+does not exist/i.test(error?.message || '')) {
-      setPermissionBackend('profiles_permissions')
-      return 'profiles_permissions'
-    }
-
     if (error?.code === '42501') {
       setPermissionBackend('staff_permissions')
       return 'staff_permissions'
     }
 
-    setPermissionBackend('profiles_permissions')
-    return 'profiles_permissions'
+    if (error?.code === '42P01' || /staff_permissions.+does not exist/i.test(error?.message || '')) {
+      const { error: profilePermissionsError } = await supabase.from('profiles').select('permissions').limit(1)
+      if (!profilePermissionsError || profilePermissionsError?.code === '42501') {
+        setPermissionBackend('profiles_permissions')
+        return 'profiles_permissions'
+      }
+      if (profilePermissionsError?.code === '42703') {
+        setPermissionBackend('none')
+        return 'none'
+      }
+      setPermissionBackend('none')
+      return 'none'
+    }
+
+    setPermissionBackend('none')
+    return 'none'
   }, [permissionBackend])
 
   const loadProfile = useCallback(async (user) => {
@@ -332,13 +344,7 @@ function App() {
       await new Promise((resolve) => window.setTimeout(resolve, 200))
     }
 
-    return {
-      id: user.id,
-      email: user.email || '',
-      full_name: user.user_metadata?.full_name || user.email || 'User',
-      role: 'staff',
-      created_at: new Date().toISOString(),
-    }
+    return null
   }, [pushNotice])
 
   const loadUserPermissions = useCallback(
@@ -370,6 +376,10 @@ function App() {
         return normalizePermissions(data, profileRow.role)
       }
 
+      if (backend === 'none') {
+        return normalizePermissions(null, profileRow.role)
+      }
+
       const { data, error } = await supabase
         .from('profiles')
         .select('permissions')
@@ -378,6 +388,7 @@ function App() {
 
       if (error) {
         if (error.code === '42703') {
+          setPermissionBackend('none')
           return normalizePermissions(null, profileRow.role)
         }
         pushNotice('error', error.message)
@@ -511,7 +522,7 @@ function App() {
           }
 
           permissionRows = permData || []
-        } else {
+        } else if (backend === 'profiles_permissions') {
           const { data: permData, error: permError } = await supabase
             .from('profiles')
             .select('id,permissions')
@@ -525,6 +536,11 @@ function App() {
               pushNotice('error', permError.message)
             }
             return { ok: false, message: permError.message }
+          }
+
+          if (permError?.code === '42703') {
+            setPermissionBackend('none')
+            return loadStaffProfiles({ silent, showSuccess, preferredBackend: 'none' })
           }
 
           permissionRows = (permData || []).map((row) => ({ user_id: row.id, ...(row.permissions || {}) }))
@@ -646,6 +662,13 @@ function App() {
         if (!mounted) {
           return
         }
+        if (!nextProfile) {
+          await supabase.auth.signOut()
+          clearSessionState()
+          setSession(null)
+          pushNotice('error', 'Account profile is missing or disabled.')
+          return
+        }
         setProfile(nextProfile)
       } catch (error) {
         if (mounted) {
@@ -689,6 +712,14 @@ function App() {
         setProfileLoading(true)
         const nextProfile = await loadProfile(nextSession.user)
         if (!mounted) {
+          return
+        }
+        if (!nextProfile) {
+          await supabase.auth.signOut()
+          clearSessionState()
+          setSession(null)
+          pushNotice('error', 'Account profile is missing or disabled.')
+          setProfileLoading(false)
           return
         }
         setProfile(nextProfile)
@@ -1176,6 +1207,15 @@ function App() {
       const backend = preferredBackend || (await resolvePermissionBackend())
       const normalized = normalizePermissions(permissions, role)
 
+      if (backend === 'none') {
+        return {
+          ok: true,
+          persisted: false,
+          permissions: normalized,
+          message: PERMISSION_BACKEND_NONE_MESSAGE,
+        }
+      }
+
       if (backend === 'staff_permissions') {
         const { error } = await supabase.from('staff_permissions').upsert(
           {
@@ -1198,7 +1238,7 @@ function App() {
           return { ok: false, message: error.message }
         }
 
-        return { ok: true, permissions: normalized }
+        return { ok: true, persisted: true, permissions: normalized }
       }
 
       const { error } = await supabase
@@ -1208,43 +1248,105 @@ function App() {
 
       if (error) {
         if (error.code === '42703') {
+          setPermissionBackend('none')
           return {
-            ok: false,
-            message:
-              'Permissions column not found in profiles. Add public.profiles.permissions jsonb or use staff_permissions table.',
+            ok: true,
+            persisted: false,
+            permissions: normalized,
+            message: PERMISSION_BACKEND_NONE_MESSAGE,
           }
         }
         return { ok: false, message: error.message }
       }
 
-      return { ok: true, permissions: normalized }
+      return { ok: true, persisted: true, permissions: normalized }
     },
     [resolvePermissionBackend],
   )
 
-  const saveStaffPermissions = useCallback(
-    async (profileId, permissions) => {
+  const updateStaff = useCallback(
+    async ({ profileId, fullName, role, permissions }) => {
       if (!isAdmin) {
-        return { ok: false, message: 'Only admins can update staff access.' }
+        return { ok: false, message: 'Only admins can update staff users.' }
+      }
+      if (!profileId) {
+        return { ok: false, message: 'Invalid staff account.' }
       }
 
-      const profileRow = staffProfiles.find((row) => row.id === profileId)
-      const targetRole = profileRow?.role || 'staff'
-      const result = await persistStaffPermissions({ profileId, role: targetRole, permissions })
+      const cleanName = String(fullName || '').trim()
+      if (!cleanName) {
+        return { ok: false, message: 'Name is required.' }
+      }
+
+      const nextRole = role === 'admin' ? 'admin' : 'staff'
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .update({ full_name: cleanName, role: nextRole })
+        .eq('id', profileId)
+
+      if (profileError) {
+        return { ok: false, message: profileError.message }
+      }
+
+      const result = await persistStaffPermissions({
+        profileId,
+        role: nextRole,
+        permissions,
+      })
       if (!result.ok) {
         pushNotice('error', result.message)
         return result
       }
 
       if (profile?.id === profileId) {
-        setUserPermissions(result.permissions)
+        setProfile((prev) => (prev ? { ...prev, full_name: cleanName, role: nextRole } : prev))
+        setUserPermissions(normalizePermissions(result.permissions, nextRole))
       }
 
       await loadStaffProfiles({ silent: true })
-      pushNotice('success', 'Access permissions updated.')
+      if (result.persisted === false) {
+        pushNotice('success', `Staff updated. ${result.message}`)
+      } else {
+        pushNotice('success', 'Staff account updated.')
+      }
+      return { ok: true, message: result.message, persisted: result.persisted !== false }
+    },
+    [isAdmin, loadStaffProfiles, persistStaffPermissions, profile?.id, pushNotice],
+  )
+
+  const deleteStaff = useCallback(
+    async ({ profileId, label }) => {
+      if (!isAdmin) {
+        return { ok: false, message: 'Only admins can delete staff users.' }
+      }
+      if (!profileId) {
+        return { ok: false, message: 'Invalid staff account.' }
+      }
+      if (profileId === profile?.id) {
+        return { ok: false, message: 'You cannot delete your own account.' }
+      }
+
+      const backend = await resolvePermissionBackend()
+      if (backend === 'staff_permissions') {
+        const { error: permissionsError } = await supabase
+          .from('staff_permissions')
+          .delete()
+          .eq('user_id', profileId)
+        if (permissionsError && permissionsError.code !== '42P01') {
+          return { ok: false, message: permissionsError.message }
+        }
+      }
+
+      const { error: profileError } = await supabase.from('profiles').delete().eq('id', profileId)
+      if (profileError) {
+        return { ok: false, message: profileError.message }
+      }
+
+      await loadStaffProfiles({ silent: true })
+      pushNotice('success', `${label || 'Staff account'} deleted.`)
       return { ok: true }
     },
-    [isAdmin, loadStaffProfiles, persistStaffPermissions, profile?.id, pushNotice, staffProfiles],
+    [isAdmin, loadStaffProfiles, profile?.id, pushNotice, resolvePermissionBackend],
   )
 
   const registerStaff = useCallback(
@@ -1333,44 +1435,14 @@ function App() {
       }
 
       await loadStaffProfiles({ silent: true })
-      pushNotice('success', 'Staff account registered.')
+      if (permissionResult.persisted === false) {
+        pushNotice('success', `Staff account registered. ${permissionResult.message}`)
+      } else {
+        pushNotice('success', 'Staff account registered.')
+      }
       return { ok: true }
     },
     [isAdmin, loadStaffProfiles, persistStaffPermissions, pushNotice],
-  )
-
-  const updateStaffRole = useCallback(
-    async (profileId, role) => {
-      if (!isAdmin) {
-        return { ok: false, message: 'Only admins can update staff roles.' }
-      }
-
-      const nextRole = role === 'admin' ? 'admin' : 'staff'
-      const { error } = await supabase.from('profiles').update({ role: nextRole }).eq('id', profileId)
-
-      if (error) {
-        return { ok: false, message: error.message }
-      }
-
-      const existingPermissions =
-        staffProfiles.find((row) => row.id === profileId)?.permissions || DEFAULT_STAFF_PERMISSIONS
-      const permissionResult = await persistStaffPermissions({
-        profileId,
-        role: nextRole,
-        permissions: existingPermissions,
-      })
-      if (!permissionResult.ok) {
-        return permissionResult
-      }
-
-      await loadStaffProfiles({ silent: true })
-      if (profile?.id === profileId) {
-        setUserPermissions(normalizePermissions(permissionResult.permissions, nextRole))
-      }
-      pushNotice('success', 'Staff role updated.')
-      return { ok: true }
-    },
-    [isAdmin, loadStaffProfiles, persistStaffPermissions, profile?.id, pushNotice, staffProfiles],
   )
 
   if (!hasSupabaseEnv) {
@@ -1526,9 +1598,10 @@ function App() {
                   isAdmin={isAdmin}
                   profiles={staffProfiles}
                   onRefreshProfiles={() => loadStaffProfiles({ showSuccess: true })}
-                  onUpdateStaffRole={updateStaffRole}
+                  onUpdateStaff={updateStaff}
+                  onDeleteStaff={deleteStaff}
                   onRegisterStaff={registerStaff}
-                  onSaveStaffPermissions={saveStaffPermissions}
+                  currentUserId={profile.id}
                 />
               ) : null}
             </>
@@ -2509,9 +2582,10 @@ function SettingsPage({
   isAdmin,
   profiles,
   onRefreshProfiles,
-  onUpdateStaffRole,
+  onUpdateStaff,
+  onDeleteStaff,
   onRegisterStaff,
-  onSaveStaffPermissions,
+  currentUserId,
 }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -2519,9 +2593,8 @@ function SettingsPage({
   const [staffSubmitting, setStaffSubmitting] = useState(false)
   const [refreshingStaff, setRefreshingStaff] = useState(false)
   const [staffError, setStaffError] = useState('')
-  const [showAccessModal, setShowAccessModal] = useState(false)
-  const [accessTarget, setAccessTarget] = useState(null)
-  const [savingAccess, setSavingAccess] = useState(false)
+  const [showEditStaffModal, setShowEditStaffModal] = useState(false)
+  const [staffEditSubmitting, setStaffEditSubmitting] = useState(false)
   const [staffForm, setStaffForm] = useState({
     fullName: '',
     email: '',
@@ -2529,7 +2602,13 @@ function SettingsPage({
     role: 'staff',
     permissions: { ...DEFAULT_STAFF_PERMISSIONS },
   })
-  const [accessForm, setAccessForm] = useState({ ...DEFAULT_STAFF_PERMISSIONS })
+  const [staffEditForm, setStaffEditForm] = useState({
+    id: '',
+    fullName: '',
+    email: '',
+    role: 'staff',
+    permissions: { ...DEFAULT_STAFF_PERMISSIONS },
+  })
 
   const save = async () => {
     setSaving(true)
@@ -2574,39 +2653,54 @@ function SettingsPage({
     setRefreshingStaff(false)
   }
 
-  const handleRoleChange = async (profileId, role) => {
+  const openEditStaff = (row) => {
+    setStaffEditForm({
+      id: row.id,
+      fullName: row.full_name || '',
+      email: row.email || '',
+      role: row.role === 'admin' ? 'admin' : 'staff',
+      permissions: normalizePermissions(row.permissions, row.role),
+    })
     setStaffError('')
-    const result = await onUpdateStaffRole(profileId, role)
-    if (!result.ok) {
-      setStaffError(result.message)
-    }
+    setShowEditStaffModal(true)
   }
 
-  const openAccessModal = (row) => {
-    setAccessTarget(row)
-    setAccessForm(normalizePermissions(row.permissions, row.role))
-    setStaffError('')
-    setShowAccessModal(true)
-  }
-
-  const submitAccess = async (event) => {
+  const submitEditStaff = async (event) => {
     event.preventDefault()
-    if (!accessTarget) {
-      return
-    }
-
-    setSavingAccess(true)
+    setStaffEditSubmitting(true)
     setStaffError('')
-    const result = await onSaveStaffPermissions(accessTarget.id, accessForm)
+
+    const result = await onUpdateStaff({
+      profileId: staffEditForm.id,
+      fullName: staffEditForm.fullName,
+      role: staffEditForm.role,
+      permissions: staffEditForm.permissions,
+    })
+
     if (!result.ok) {
       setStaffError(result.message)
-      setSavingAccess(false)
+      setStaffEditSubmitting(false)
       return
     }
 
-    setSavingAccess(false)
-    setShowAccessModal(false)
-    setAccessTarget(null)
+    setStaffEditSubmitting(false)
+    setShowEditStaffModal(false)
+  }
+
+  const handleDeleteStaff = async (row) => {
+    const confirmed = window.confirm('Delete this staff account?')
+    if (!confirmed) {
+      return
+    }
+
+    setStaffError('')
+    const result = await onDeleteStaff({
+      profileId: row.id,
+      label: row.full_name || row.email || 'Staff account',
+    })
+    if (!result.ok) {
+      setStaffError(result.message)
+    }
   }
 
   return (
@@ -2707,6 +2801,7 @@ function SettingsPage({
               { label: 'Role' },
               { label: 'Access' },
               { label: 'Created' },
+              { label: 'Actions', className: 'text-right' },
             ]}
           >
             {profiles.map((row) => (
@@ -2717,27 +2812,32 @@ function SettingsPage({
                   <Badge tone="emerald">Active</Badge>
                 </td>
                 <td className="px-3 py-2 text-xs">
-                  <select
-                    className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs outline-none"
-                    value={row.role}
-                    onChange={(event) => void handleRoleChange(row.id, event.target.value)}
-                  >
-                    <option value="staff">staff</option>
-                    <option value="admin">admin</option>
-                  </select>
+                  <Badge tone={row.role === 'admin' ? 'indigo' : 'slate'}>{row.role}</Badge>
                 </td>
                 <td className="px-3 py-2 text-xs">
-                  <div className="inline-flex items-center justify-end gap-2 w-full">
-                    <span className="text-slate-500">
-                      {PAGE_ACCESS_FIELDS.filter((field) => row.permissions?.[field]).length}/
-                      {PAGE_ACCESS_FIELDS.length}
-                    </span>
-                    <Button size="sm" variant="secondary" onClick={() => openAccessModal(row)}>
-                      Access
+                  <span className="text-slate-500">
+                    {PAGE_ACCESS_FIELDS.filter((field) => row.permissions?.[field]).length}/
+                    {PAGE_ACCESS_FIELDS.length}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(row.created_at)}</td>
+                <td className="px-3 py-2 text-xs text-right">
+                  <div className="inline-flex items-center gap-2">
+                    <Button size="sm" variant="secondary" icon={Edit3} onClick={() => openEditStaff(row)}>
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={Trash2}
+                      className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+                      onClick={() => void handleDeleteStaff(row)}
+                      disabled={row.id === currentUserId}
+                    >
+                      Delete
                     </Button>
                   </div>
                 </td>
-                <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(row.created_at)}</td>
               </tr>
             ))}
           </Table>
@@ -2811,10 +2911,10 @@ function SettingsPage({
                     type="checkbox"
                     className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                     checked={Boolean(staffForm.permissions[field])}
-                    disabled={staffForm.role === 'admin'}
-                    onChange={(event) =>
-                      setStaffForm((prev) => ({
-                        ...prev,
+                  disabled={staffForm.role === 'admin'}
+                  onChange={(event) =>
+                    setStaffForm((prev) => ({
+                      ...prev,
                         permissions: { ...prev.permissions, [field]: event.target.checked },
                       }))
                     }
@@ -2843,28 +2943,61 @@ function SettingsPage({
       </Modal>
 
       <Modal
-        open={showAccessModal}
-        onClose={() => setShowAccessModal(false)}
-        title="Staff Access"
-        description={
-          accessTarget
-            ? `Set page access for ${accessTarget.full_name || accessTarget.email || 'staff user'}.`
-            : ''
-        }
+        open={showEditStaffModal}
+        onClose={() => setShowEditStaffModal(false)}
+        title="Edit Staff"
+        description="Update profile, role, and access permissions."
       >
-        <form className="space-y-3" onSubmit={(event) => void submitAccess(event)}>
+        <form className="space-y-3" onSubmit={(event) => void submitEditStaff(event)}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Full Name"
+              value={staffEditForm.fullName}
+              onChange={(event) =>
+                setStaffEditForm((prev) => ({ ...prev, fullName: event.target.value }))
+              }
+            />
+            <Input label="Email" value={staffEditForm.email} disabled />
+            <label className="space-y-1 block">
+              <span className="text-xs font-medium text-slate-600">Role</span>
+              <select
+                className="w-full h-9 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none"
+                value={staffEditForm.role}
+                onChange={(event) => {
+                  const role = event.target.value === 'admin' ? 'admin' : 'staff'
+                  setStaffEditForm((prev) => ({
+                    ...prev,
+                    role,
+                    permissions:
+                      role === 'admin'
+                        ? { ...FULL_PAGE_PERMISSIONS }
+                        : normalizePermissions(prev.permissions, role),
+                  }))
+                }}
+              >
+                <option value="staff">staff</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+          </div>
+
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-medium text-slate-600 mb-2">Access Permissions</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {PAGE_ACCESS_FIELDS.map((field) => (
                 <label key={field} className="inline-flex items-center gap-2 text-xs text-slate-700">
                   <input
                     type="checkbox"
                     className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                    checked={Boolean(accessForm[field])}
+                    checked={Boolean(staffEditForm.permissions[field])}
+                    disabled={staffEditForm.role === 'admin'}
                     onChange={(event) =>
-                      setAccessForm((prev) => ({
+                      setStaffEditForm((prev) => ({
                         ...prev,
-                        [field]: event.target.checked,
+                        permissions: {
+                          ...prev.permissions,
+                          [field]: event.target.checked,
+                        },
                       }))
                     }
                   />
@@ -2875,11 +3008,11 @@ function SettingsPage({
           </div>
 
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setShowAccessModal(false)}>
+            <Button type="button" variant="secondary" onClick={() => setShowEditStaffModal(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={savingAccess}>
-              {savingAccess ? 'Saving...' : 'Save Access'}
+            <Button type="submit" disabled={staffEditSubmitting}>
+              {staffEditSubmitting ? 'Saving...' : 'Save Changes'}
             </Button>
           </div>
         </form>
