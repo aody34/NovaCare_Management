@@ -2295,13 +2295,38 @@ function InventoryPage({
             { label: 'Stock', className: 'text-right' },
             { label: 'Expiry' },
             { label: 'Status' },
-            ...(isAdmin ? [{ label: 'Actions', className: 'text-right sticky right-0 bg-white z-10' }] : []),
+            ...(isAdmin
+              ? [
+                  {
+                    label: 'Actions',
+                    className: 'hidden md:table-cell text-right sticky right-0 bg-white z-10',
+                  },
+                ]
+              : []),
           ]}
         >
           {filtered.map((medicine) => (
             <tr key={medicine.id} className="border-t border-slate-100">
               <td className="px-3 py-2 text-xs font-medium text-slate-800">{medicine.sku}</td>
-              <td className="px-3 py-2 text-xs text-slate-800">{medicine.name}</td>
+              <td className="px-3 py-2 text-xs text-slate-800">
+                <div>{medicine.name}</div>
+                {isAdmin ? (
+                  <div className="mt-1.5 inline-flex items-center gap-1.5 md:hidden">
+                    <Button variant="secondary" size="sm" icon={Edit3} onClick={() => openEditModal(medicine)}>
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={Trash2}
+                      onClick={() => void handleDeleteMedicine(medicine)}
+                      className="bg-rose-600 border-rose-600 text-white hover:bg-rose-700"
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ) : null}
+              </td>
               <td className="px-3 py-2 text-xs text-slate-600">{medicine.category}</td>
               <td className="px-3 py-2 text-xs text-right text-slate-700">
                 {formatCurrency(medicine.price, currency)}
@@ -2312,7 +2337,7 @@ function InventoryPage({
                 <Badge tone={statusTone(medicine.status)}>{medicine.status}</Badge>
               </td>
               {isAdmin ? (
-                <td className="px-3 py-2 text-xs text-right sticky right-0 bg-white">
+                <td className="px-3 py-2 text-xs text-right sticky right-0 bg-white hidden md:table-cell">
                   <div className="inline-flex items-center gap-2">
                     <Button variant="secondary" size="sm" icon={Edit3} onClick={() => openEditModal(medicine)}>
                       Edit
